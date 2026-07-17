@@ -2,7 +2,7 @@ name: astrbot_plugin_cgra_client
 display_name: CGRA 云游戏控制
 desc: 通过 QQ 控制 CGRA 任务，接收实时状态并取消任务。
 short_desc: QQ 控制 CGRA 云游戏任务。
-version: v0.1.0
+version: v0.2.0
 author: kamicry
 repo: https://github.com/kamicry/astrbot_plugin_CGRA_client
 astrbot_version: ">=4.16,<5"

@@ -24,7 +24,7 @@ TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
     "astrbot_plugin_cgra_client",
     "kamicry",
     "通过 QQ 控制 CGRA 云游戏任务，并接收状态与取消结果。",
-    "v0.1.0",
+    "v0.2.0",
 )
 class CGRAClientPlugin(Star):
     """维护一个到 CGRA 的 WebSocket 连接，并把任务状态回传 QQ。"""
