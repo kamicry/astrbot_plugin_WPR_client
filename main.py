@@ -43,6 +43,7 @@ class CGRAClientPlugin(Star):
         self._ws: Any = None
         self._connected = asyncio.Event()
         self._stopping = False
+        self._last_connection_error: str | None = None
         self._connection_task: asyncio.Task | None = None
         self._send_lock = asyncio.Lock()
         self._submit_lock = asyncio.Lock()
@@ -65,6 +66,7 @@ class CGRAClientPlugin(Star):
 
     async def _start_connection(self):
         self._stopping = False
+        self._last_connection_error = None
         if self._connection_task is None or self._connection_task.done():
             self._connection_task = asyncio.create_task(
                 self._connection_loop(),
@@ -114,12 +116,12 @@ class CGRAClientPlugin(Star):
                 raise
             except Exception as exc:
                 if not self._stopping:
+                    self._last_connection_error = str(exc)
                     logger.warning("CGRA WebSocket disconnected: %s", exc)
             finally:
                 self._ws = None
                 self._connected.clear()
-            if not self._stopping:
-                await asyncio.sleep(3)
+            return
 
     async def _handle_message(self, raw_message: str | bytes):
         try:
@@ -167,7 +169,8 @@ class CGRAClientPlugin(Star):
         try:
             await asyncio.wait_for(self._connected.wait(), timeout=self.connect_timeout)
         except asyncio.TimeoutError as exc:
-            raise RuntimeError(f"无法连接 CGRA WebSocket：{self.ws_url}") from exc
+            detail = f"：{self._last_connection_error}" if self._last_connection_error else ""
+            raise RuntimeError(f"无法连接 CGRA WebSocket：{self.ws_url}{detail}") from exc
 
     async def _send(self, message: dict[str, Any]):
         await self._wait_for_connection()
