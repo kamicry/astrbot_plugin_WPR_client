@@ -4,10 +4,13 @@
 
 ## 功能
 
-- 通过 QQ 提交 `task` 命名模板或自由参数任务。
+- 使用 `/cgra start` 建立 QQ 控制会话，后续直接发送任务文本。
+- 提交 `task` 命名模板或自由参数任务。
 - 提交 Maa `TemplateMatch` 与 `OcrDetect` 单任务。
-- 查询 CGRA 服务状态和单个任务状态。
+- 每次提交立即回复任务 ID、服务端任务 JSON 和大致流程。
+- 查询 CGRA 服务状态和单个任务状态，并返回当前截图。
 - 取消排队任务，或取消正在执行的可中断任务。
+- 任务结束时主动发送状态、耗时和结束截图。
 - 自动重连 CGRA WebSocket。
 - 可配置允许使用插件的 QQ 用户 ID。
 
@@ -17,7 +20,7 @@
 2. CGRA 的 WebSocket 地址可从 AstrBot 所在机器访问。
 3. 本插件已通过 AstrBot 插件管理器安装或放入 `data/plugins/` 目录。
 
-默认地址为：
+默认地址：
 
 ```text
 ws://127.0.0.1:8765/ws
@@ -36,9 +39,28 @@ ws://192.168.1.20:8765/ws
 | `ws_url` | `ws://127.0.0.1:8765/ws` | CGRA WebSocket 地址 |
 | `connect_timeout` | `10` | 连接和指令响应等待超时，单位秒 |
 | `notify_completion` | `true` | 任务进入终态时是否主动通知 QQ 会话 |
+| `capture_screenshot` | `true` | 请求任务终态和状态查询截图，并作为 QQ 图片发送 |
 | `allowed_users` | `[]` | 允许使用插件的 QQ 用户 ID 列表；留空不限制 |
 
 `allowed_users` 建议在实际控制游戏时配置为你的 QQ 号，避免群聊中的其他成员执行点击、启动或关闭命令。
+
+## 启动控制会话
+
+```text
+/cgra start
+```
+
+该命令建立与 CGRA 的 WebSocket 连接，并在当前 QQ 会话开启控制模式。进入后，无需继续输入 `/cgra` 前缀，直接发送任务文本即可；发送 `quit` 会退出控制模式并主动断开 WebSocket。
+
+```text
+run
+click x=0.5 y=0.5
+start game=mrfz
+status 任务ID
+quit
+```
+
+会话内的 `start game=mrfz` 才是提交给 CGRA 的浏览器/云游戏启动任务；`/cgra start` 本身只启动 QQ 控制会话，不会打开云游戏。
 
 ## QQ 命令
 
@@ -48,14 +70,14 @@ ws://192.168.1.20:8765/ws
 /cgra help
 ```
 
-### 提交命名模板任务
+### 直接提交命名模板任务
 
 ```text
 /cgra task run
 /cgra task center_click
 ```
 
-### 提交自由参数任务
+### 直接提交自由参数任务
 
 参数格式为 `key=value`。数值和 `true` / `false` 会自动转换为 JSON 对应类型。
 
@@ -86,13 +108,15 @@ ws://192.168.1.20:8765/ws
 /cgra status 任务ID
 ```
 
+查询单任务状态会同时返回状态文字和一张当前游戏截图。
+
 ### 取消任务
 
 ```text
 /cgra cancel 任务ID
 ```
 
-提交成功后，插件会返回任务 ID。任务完成、失败或取消时，会自动向发起命令的 QQ 私聊或群聊会话发送状态消息。
+每次提交会立即返回任务 ID、服务端解析后的任务 JSON 与大致流程。任务完成、失败或取消时，插件会自动向发起命令的 QQ 私聊或群聊会话发送状态、执行耗时和任务结束截图。
 
 ## 取消行为
 

@@ -16,6 +16,12 @@
     "type": "bool",
     "default": true
   },
+  "capture_screenshot": {
+    "description": "任务终态和状态查询时请求 CGRA 截图",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后，插件会把任务结束截图或状态查询截图作为 QQ 图片发送。"
+  },
   "allowed_users": {
     "description": "允许使用插件的 QQ 用户 ID 列表",
     "type": "list",
