@@ -1,183 +1,116 @@
-# 🎨 PJSK & Arcaea 表情包生成器（AstrBot 插件）
+# CGRA QQ 控制插件
 
-一款基于 [AstrBot](https://github.com/Soulter/AstrBot) 的插件，用于生成 **Project SEKAI（PJSK）** 和 **Arcaea** 角色表情包（梗图）。
+`astrbot_plugin_cgra_client` 是 AstrBot 插件。它通过 CGRA 的 WebSocket 接口，把 QQ 命令转换为云游戏控制任务，并把任务完成、失败或取消结果主动回复到发起会话。
 
-参考https://github.com/lgc-NB2Dev/nonebot-plugin-meme-stickers -参考Python代码用nextjs重写生成表情包
+## 功能
 
-示例：[https://next-sticker.vercel.app/api/overlay-text](https://next-sticker.vercel.app/api/overlay-text)
+- 通过 QQ 提交 `task` 命名模板或自由参数任务。
+- 提交 Maa `TemplateMatch` 与 `OcrDetect` 单任务。
+- 查询 CGRA 服务状态和单个任务状态。
+- 取消排队任务，或取消正在执行的可中断任务。
+- 自动重连 CGRA WebSocket。
+- 可配置允许使用插件的 QQ 用户 ID。
 
-> 通过 Vercel 部署的外部 API 将文字渲染到角色图片上，插件负责用户交互流程。
-> 
-API仓库[kamicry/next-sticker](https://github.com/kamicry/next-sticker/)
+## 前置条件
 
-!!!astrbot插件配置里必须填写api
+1. CGRA 服务已启动，并已安装 `websockets` 依赖。
+2. CGRA 的 WebSocket 地址可从 AstrBot 所在机器访问。
+3. 本插件已通过 AstrBot 插件管理器安装或放入 `data/plugins/` 目录。
 
-[http://localhost:3000/api/overlay-text](http://localhost:3000/api/overlay-text)
+默认地址为：
 
-api可部署在vercel，点击下面的按钮一键部署:
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/kamicry/next-sticker)
-
-或在服务器上部署
-```bash
-# 安装依赖
-npm install
-
-# 启动开发服务器
-npm run dev
+```text
+ws://127.0.0.1:8765/ws
 ```
 
-打开 [http://localhost:3000](http://localhost:3000)。
+如果 AstrBot 和 CGRA 不在同一台机器，需在插件配置的 `ws_url` 中填入 CGRA 主机的局域网地址，例如：
 
-
----
-
-## ✨ 功能
-
-- **🖼 交互式引导** — 一步步选择作品、角色、样式、输入文字，轻松生成表情包
-- **⚡ 快捷指令** — 一行命令直达，无需交互
-- **📋 角色列表** — 查看所有可用角色及其编号
-- **🎮 双作品支持** — 同时支持 Project SEKAI 和 Arcaea 两大音游
-- **🎭 丰富样式** — PJSK 每个角色拥有多种表情/姿势（最多 16 种）
-
----
-
-## 📌 命令
-
-| 命令 | 说明 |
-|---|---|
-| `/draw` | 进入交互式模式，按步骤生成表情包 |
-| `/draw list` | 发送角色参考图（PJSK + Arcaea） |
-| `/draw help` | 显示帮助信息 |
-| `/draw pjsk <样式ID> <文字>` | 快捷生成 PJSK 表情包 |
-| `/draw arcaea <角色编号> <文字>` | 快捷生成 Arcaea 表情包 |
-| `quit` | （交互模式中）退出当前会话 |
-
-### 使用示例
-
-```
-/draw pjsk 42 好饿
-/draw arcaea 3 你干嘛
+```text
+ws://192.168.1.20:8765/ws
 ```
 
----
+## 配置
 
-## 🔧 配置
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `ws_url` | `ws://127.0.0.1:8765/ws` | CGRA WebSocket 地址 |
+| `connect_timeout` | `10` | 连接和指令响应等待超时，单位秒 |
+| `notify_completion` | `true` | 任务进入终态时是否主动通知 QQ 会话 |
+| `allowed_users` | `[]` | 允许使用插件的 QQ 用户 ID 列表；留空不限制 |
 
-在 AstrBot 管理面板中设置以下配置项：
+`allowed_users` 建议在实际控制游戏时配置为你的 QQ 号，避免群聊中的其他成员执行点击、启动或关闭命令。
 
-| 配置项 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `api_url` | string | `""` | 表情渲染 API 地址，格式如 `https://your-project.vercel.app/api/overlay-text` |
+## QQ 命令
 
-> ⚠️ `api_url` **必须配置**，否则插件无法生成表情包。请向机器人管理员申请配置。
+### 帮助
 
----
-
-## ☁️ 部署 API 后端
-
-本插件依赖一个独立的 Vercel API 服务进行表情渲染，需要自行部署。
-可部署在vercel，点击下面的按钮一键部署:
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/kamicry/next-sticker)
-
-或在服务器上部署
-```bash
-# 安装依赖
-npm install
-
-# 启动开发服务器
-npm run dev
+```text
+/cgra help
 ```
 
-打开 [http://localhost:3000](http://localhost:3000)。
+### 提交命名模板任务
 
-
-### API 请求格式
-
-```
-GET {api_url}?type={pack}&path={raw_png_url}&key={文字}
+```text
+/cgra task run
+/cgra task center_click
 ```
 
-| 参数 | 说明 |
-|---|---|
-| `type` | `pjsk` 或 `arcaea` |
-| `path` | 角色 PNG 图片在 GitHub 上的原始链接 |
-| `key` | 要叠加的文字（需 URL 编码） |
+### 提交自由参数任务
 
-部署完成后将 API URL 填入插件的 `api_url` 配置项即可使用。
+参数格式为 `key=value`。数值和 `true` / `false` 会自动转换为 JSON 对应类型。
 
----
-
-## 🎭 角色一览
-
-### Project SEKAI（26 位角色，样式 ID 范围 0~358）
-
-| 角色 | 样式数 | 角色 | 样式数 |
-|---|---|---|---|
-| 初音未来 (Miku) | 16 | 星乃一歌 (Ichika) | 15 |
-| 镜音铃 (Rin) | 16 | 天马咲希 (Saki) | 14 |
-| 镜音连 (Len) | 14 | 望月穗波 (Honami) | 14 |
-| 巡音流歌 (Luka) | 15 | 日野森志步 (Shiho) | 14 |
-| MEIKO | 14 | 花里实乃理 (Minori) | 15 |
-| KAITO | 15 | 桐谷遥 (Haruka) | 15 |
-| 小豆泽心羽 (Kohane) | 14 | 桃井爱莉 (Airi) | 15 |
-| 白石杏 (An) | 14 | 日野森雫 (Shizuku) | 14 |
-| 东云彰人 (Akito) | 14 | 天马司 (Tsukasa) | 14 |
-| 青柳冬弥 (Touya) | 14 | 神代类 (Rui) | 14 |
-| 奏 (Kanade) | 14 | 东云绘名 (Ena) | 14 |
-| 朝比奈真冬 (Mafuyu) | 13 | 晓山瑞希 (Mizuki) | 15 |
-| 草薙宁宁 (Nene) | 14 | 凤笑梦 (Emu) | 14 |
-
-### Arcaea（22 个角色/形态）
-
-包含光 (Hikari)、对立 (Tairitsu) 等多种角色及其不同形态，每个角色提供 1 种样式。
-
----
-
-## 📁 项目结构
-
-```
-astrbot-plugin-pjsk-sticker/
-├── main.py               # 插件核心逻辑
-├── metadata.yaml          # AstrBot 插件元数据
-├── _conf_schema.json      # 配置项定义
-├── requirements.txt       # Python 依赖（仅 httpx）
-├── list.json              # 角色/样式/作品数据
-├── list/                  # 角色参考图片目录
-│   ├── characterListAll.jpeg       # PJSK 全部角色一览
-│   ├── characterListWithIndex.jpeg # PJSK 角色带编号
-│   ├── arcaea_list.jpg             # Arcaea 角色列表
-│   └── {角色名}.jpeg               # 单个角色样式参考图
-├── CHANGELOG.md           # 更新日志
-├── README.md              # 本文件
-├── LICENSE                # 许可证
-└── logo.png               # 插件图标
+```text
+/cgra task click x=0.5 y=0.5
+/cgra task wait seconds=20
+/cgra task swipe x1=0.1 y1=0.5 x2=0.9 y2=0.5 duration=200
+/cgra task start game=mrfz headless=false
 ```
 
----
+带空格的文本请使用引号：
 
-## 📦 依赖
+```text
+/cgra task text text="hello world"
+```
 
-- `httpx >= 0.24.0` — HTTP 请求库
-- `astrbot` — AstrBot 框架运行时（无需单独安装）
+### Maa 资源单任务
 
----
+```text
+/cgra cv StartUp
+/cgra ocr GameStartUpdateOCR
+```
 
-## 📄 许可证
+### 查询状态
 
-本项目基于 [MIT 许可证](LICENSE) 开源。
+```text
+/cgra status
+/cgra status 任务ID
+```
 
----
+### 取消任务
 
-## 🙏 致谢
+```text
+/cgra cancel 任务ID
+```
 
-- [AstrBot](https://github.com/Soulter/AstrBot) — 插件框架
-- https://github.com/araea/koishi-plugin-pjsk-pptr -角色配置文件参考，以及pjsk表情来源
-- https://github.com/lgc-NB2Dev/meme-stickers-hub -arcaea表情包来源
-- https://github.com/lgc-NB2Dev/nonebot-plugin-meme-stickers -表情生成流程参考
-- https://github.com/Rosemoe/arcaea-stickers -arcaea表情包来源
-- 感谢DeepSeek-v4的抓虫🐛
-- [Project SEKAI](https://pjsekai.sega.jp/) — 角色素材版权归 SEGA / Colorful Palette 所有
-- [Arcaea](https://arcaea.lowiro.com/) — 角色素材版权归 lowiro 所有
+提交成功后，插件会返回任务 ID。任务完成、失败或取消时，会自动向发起命令的 QQ 私聊或群聊会话发送状态消息。
 
+## 取消行为
+
+- 排队任务会立即取消。
+- `wait` 在约 0.1 秒内响应取消。
+- 多步模板在步骤之间响应取消。
+- 已开始的点击、截图、浏览器启动或视觉识别无法安全地强制中断，会在当前原子操作结束后停止后续步骤。
+
+## 安装
+
+使用 AstrBot 插件市场或仓库地址安装：
+
+```text
+https://github.com/kamicry/astrbot_plugin_CGRA_client
+```
+
+本地开发时，将仓库放入 AstrBot 的 `data/plugins/` 目录后，在 AstrBot WebUI 的插件管理页面重载插件。
+
+## 协议
+
+插件依赖 CGRA 的 WebSocket 协议。任务消息格式、状态机和错误语义请查看 CGRA 项目的 `WEBSOCKET_API.md`。
