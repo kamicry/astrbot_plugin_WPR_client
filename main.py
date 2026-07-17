@@ -1,465 +1,315 @@
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
-from astrbot.api.star import Context, Star, register
-from astrbot.api import logger, AstrBotConfig
-import astrbot.api.message_components as Comp
-import json
-import os
-import re
-import urllib.parse
-import base64
-import httpx
+"""CGRA 的 AstrBot QQ 控制插件。"""
 
-@register("astrbot_plugin_pjsk_sticker", "kamicry", "pjsk表情包生成器", "v1.2.1")
-class StickerPlugin(Star):
-    def __init__(self, context: Context, config: AstrBotConfig = None):
+from __future__ import annotations
+
+import asyncio
+import json
+import shlex
+from typing import Any
+
+import websockets
+from astrbot.api import AstrBotConfig, logger
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
+from astrbot.api.star import Context, Star, register
+
+
+TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
+
+
+@register(
+    "astrbot_plugin_cgra_client",
+    "kamicry",
+    "通过 QQ 控制 CGRA 云游戏任务，并接收状态与取消结果。",
+    "v0.1.0",
+)
+class CGRAClientPlugin(Star):
+    """维护一个到 CGRA 的 WebSocket 连接，并把任务状态回传 QQ。"""
+
+    def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
         self.config = config or {}
-        self.sessions = {}
-        self.list_data = {}
-        self.list_dir = os.path.join(os.path.dirname(__file__), "list")
-        self.image_cache = {}
+        self.ws_url = str(self._config("ws_url", "ws://127.0.0.1:8765/ws"))
+        self.connect_timeout = float(self._config("connect_timeout", 10))
+        self.notify_completion = bool(self._config("notify_completion", True))
+        self.allowed_users = {str(value) for value in self._config("allowed_users", []) if str(value)}
 
-        # 从配置读取 API URL，默认不提供
-        self.api_url = self.config.get("api_url", "") if isinstance(self.config, dict) else ""
-        if not self.api_url:
-            logger.warning("pjsk表情包生成器插件未配置 API URL！请在后台配置。")
-        
+        self._ws: Any = None
+        self._connected = asyncio.Event()
+        self._stopping = False
+        self._connection_task: asyncio.Task | None = None
+        self._send_lock = asyncio.Lock()
+        self._submit_lock = asyncio.Lock()
+        self._accepted_waiter: asyncio.Future[dict[str, Any]] | None = None
+        self._task_waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._server_status_waiter: asyncio.Future[dict[str, Any]] | None = None
+        self._task_states: dict[str, dict[str, Any]] = {}
+        self._task_origins: dict[str, Any] = {}
+
     async def initialize(self):
-        """插件初始化，加载list.json数据"""
-        try:
-            list_json_path = os.path.join(os.path.dirname(__file__), "list.json")
-            with open(list_json_path, 'r', encoding='utf-8') as f:
-                self.list_data = json.load(f)
-            logger.info("贴纸数据加载成功")
-        except Exception as e:
-            logger.error(f"加载贴纸数据失败: {e}")
-            
-    def _get_session_key(self, event: AstrMessageEvent):
-        """获取会话key，使用(platform, sender_id)元组"""
-        message_obj = getattr(event, "message_obj", None)
-        platform = None
-        if message_obj is not None:
-            platform = getattr(message_obj, "platform", None)
-            if platform is None:
-                inner = getattr(message_obj, "message_obj", None)
-                platform = getattr(inner, "platform", None) if inner is not None else None
-        if platform is None:
-            platform = getattr(event, "platform", None)
-        platform_identifier = "default"
-        if platform is not None:
-            platform_identifier = str(getattr(platform, "name", platform))
-        sender_id = event.get_sender_id()
-        sender_identifier = "unknown" if sender_id is None else str(sender_id)
-        return (platform_identifier, sender_identifier)
-    
-    def _get_all_packs(self):
-        """获取所有可用的pack列表"""
-        return list(self.list_data.get("packs", {}).keys())
-    
-    def _get_characters_in_pack(self, pack_name):
-        """获取指定pack中的所有角色"""
-        pack_data = self.list_data.get("packs", {}).get(pack_name, {})
-        characters = pack_data.get("characters", {})
-        return characters
-    
-    def _find_character_by_style_id(self, pack_name, style_id):
-        """根据样式ID查找对应的角色和样式"""
-        characters = self._get_characters_in_pack(pack_name)
-        
-        for char_id, char_data in characters.items():
-            char_styles = char_data["styles"]
-            char_ids = char_data["id"]
-            
-            # 创建id到style的映射
-            id_to_style = {id_val: style for id_val, style in zip(char_ids, char_styles)}
-            
-            if style_id in id_to_style:
-                character_name = char_data["name"]
-                style = id_to_style[style_id]
-                return (character_name, style)
-        
-        return None
-    
-    def _load_image_as_base64(self, image_name):
-        """加载图片并转换为base64"""
-        if image_name in self.image_cache:
-            return self.image_cache[image_name]
-        
-        try:
-            image_path = os.path.join(self.list_dir, image_name)
-            if not os.path.exists(image_path):
-                logger.warning(f"图片不存在: {image_path}")
-                return None
-            
-            with open(image_path, 'rb') as f:
-                image_bytes = f.read()
-                image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-                self.image_cache[image_name] = image_base64
-                return image_base64
-        except Exception as e:
-            logger.error(f"加载图片失败 {image_name}: {e}")
-            return None
-    
-    @filter.command("draw")
-    async def start_sticker_session(self, event: AstrMessageEvent):
-        """开始贴纸生成会话或处理带参数的命令"""
-        # 检查 API URL 是否已配置
-        if not self.api_url:
-            yield event.plain_result("❌ 插件未配置 API URL，请联系管理员在后台配置。")
-            return
+        self._connection_task = asyncio.create_task(
+            self._connection_loop(),
+            name="cgra-astrbot-websocket",
+        )
+        logger.info("CGRA client plugin initialized: %s", self.ws_url)
 
-        session_key = self._get_session_key(event)
-
-        # 获取命令参数
-        # @filter.command 装饰器会自动去除命令前缀，但message_str可能还包含命令名
-        message_text = event.message_str.strip()
-        
-        # 移除可能存在的命令前缀（/draw 或 draw）
-        if message_text.startswith('/draw'):
-            message_text = message_text[5:].strip()  # 移除 '/draw'
-        elif message_text.startswith('draw'):
-            message_text = message_text[4:].strip()  # 移除 'draw'
-        
-        # 分割参数
-        args = message_text.split() if message_text else []
-
-        # 处理 /draw list 命令
-        if len(args) > 0 and args[0].lower() == "list":
-            pjsk_img = self._load_image_as_base64("characterListAll.jpeg")
-            if pjsk_img:
-                yield event.chain_result([
-                    Comp.Plain(text="PJSK 角色列表："),
-                    Comp.Image(file=f"base64://{pjsk_img}")
-                ])
-            arcaea_img = self._load_image_as_base64("arcaea_list.jpg")
-            if arcaea_img:
-                yield event.chain_result([
-                    Comp.Plain(text="Arcaea 角色列表："),
-                    Comp.Image(file=f"base64://{arcaea_img}")
-                ])
-            return
-
-        # 处理 /draw help 命令
-        if len(args) > 0 and args[0].lower() == "help":
-            help_text = """📖 贴纸生成器命令帮助
-
-    命令列表：
-    1. /draw - 进入交互式模式选择贴纸包、角色、样式并输入文字
-    2. /draw list - 查看所有角色列表
-    3. /draw help - 查看此帮助信息
-    4. /draw <pack> <样式id/序号> <文字> - 直接生成贴纸
-
-    快速生成模式说明：
-    - pjsk: /draw pjsk <样式id> <文字>（样式id: 0~358）
-    - arcaea: /draw arcaea <角色序号> <文字>（序号见 arcaea_list.jpg）
-
-    交互式模式退出：
-    - 在任何步骤输入 quit 可直接退出贴纸生成器
-
-    例如：/draw pjsk 42 你好"""
-            yield event.plain_result(help_text)
-            return
-
-        # 处理 /draw <pack> <样式id> <文字> 直接生成模式
-        if len(args) >= 3:
-            pack_name = args[0].lower()
-            all_packs = self._get_all_packs()
-
-            # 检查pack是否存在
-            pack_found = None
-            for pack in all_packs:
-                if pack.lower() == pack_name:
-                    pack_found = pack
-                    break
-
-            if pack_found:
-                try:
-                    text = " ".join(args[2:])
-
-                    if pack_found == "arcaea":
-                        # arcaea 直接生成：/draw arcaea <角色序号> <文字>
-                        characters = self._get_characters_in_pack("arcaea")
-                        char_index = str(int(args[1]))  # 规范化索引
-                        if char_index not in characters:
-                            yield event.plain_result(f"❌ 角色序号 {args[1]} 不存在")
-                            return
-                        character_data = characters[char_index]
-                        character_name = character_data["name"]
-                        styles = character_data.get("styles", [])
-                        style = styles[0] if styles else None
-                        url = self._build_sticker_url(pack_found, character_name, style, text)
-                    else:
-                        # pjsk 直接生成：/draw pjsk <样式id> <文字>
-                        style_id = int(args[1])
-                        character_info = self._find_character_by_style_id(pack_found, style_id)
-                        if not character_info:
-                            yield event.plain_result(f"❌ 样式ID {style_id} 不存在，请输入 0 到 358 之间的数字")
-                            return
-                        character_name, style = character_info
-                        url = self._build_sticker_url(pack_found, character_name, style, text)
-
-                    try:
-                        async with httpx.AsyncClient() as client:
-                            response = await client.get(url, timeout=30.0)
-                            if response.status_code == 200:
-                                image_bytes = response.content
-                                image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-
-                                yield event.chain_result([
-                                    Comp.Image(file=f"base64://{image_base64}"),
-                                    Comp.Plain(text=f"✨ 贴纸生成完成！\n角色：{character_name}\n文字：{text}")
-                                ])
-                            else:
-                                yield event.plain_result(f"❌ 图片生成失败，状态码: {response.status_code}")
-                    except Exception as e:
-                        logger.error(f"下载图片时出错: {e}")
-                        yield event.plain_result(f"❌ 图片下载失败: {str(e)}")
-                except ValueError:
-                    yield event.plain_result(f"❌ 参数错误，请检查序号是否为数字")
-            else:
-                yield event.plain_result(f"❌ 贴纸包 '{pack_name}' 不存在")
-            return
-
-        # 如果用户已有会话，先清除
-        if session_key in self.sessions:
-            del self.sessions[session_key]
-
-        # 初始化新会话（交互式模式）
-        self.sessions[session_key] = {
-            "step": "select_pack",
-            "pack": None,
-            "character": None,
-            "character_id": None,
-            "style_id": None,
-            "text": None
-        }
-
-        # 获取所有可用的pack列表
-        all_packs = self._get_all_packs()
-        pack_list_msg = "请选择贴纸包(输入名称):\n" + "\n".join([f"- {pack}" for pack in all_packs])
-
-        yield event.plain_result(f"欢迎使用贴纸生成器！\n{pack_list_msg}\n\n💡 提示：任何时刻输入 quit 可直接退出")
-    
-    @filter.regex(r'.*', flags=re.IGNORECASE)
-    async def handle_session_message(self, event: AstrMessageEvent):
-        """统一处理会话中的消息"""
-        session_key = self._get_session_key(event)
-        
-        # 如果没有活跃会话，不处理
-        if session_key not in self.sessions:
-            return
-
-        # 检查 API URL 是否已配置
-        if not self.api_url:
-            yield event.plain_result("❌ 插件未配置 API URL，请联系管理员在后台配置。")
-            del self.sessions[session_key]
-            return
-        
-        session = self.sessions[session_key]
-        step = session["step"]
-        message = event.message_str.strip()
-        
-        # 跳过命令消息（以/开头的消息）和空消息，避免与 @filter.command 重复处理
-        if not message or message.startswith('/') or message.lower() == 'draw':
-            return
-        
-        # 检查是否输入了quit命令
-        if message.lower() == "quit":
-            if session_key in self.sessions:
-                del self.sessions[session_key]
-            yield event.plain_result("已退出贴纸生成器，如需再次生成请输入 /draw")
-            return
-        
-        # 根据当前步骤路由到对应的处理逻辑
-        handler = None
-        if step == "select_pack":
-            handler = self._handle_pack_selection
-        elif step == "select_character":
-            handler = self._handle_character_selection
-        elif step == "select_style":
-            handler = self._handle_style_selection
-        elif step == "input_text":
-            handler = self._handle_text_input
-        
-        if handler is None:
-            return
-        
-        result = await handler(event, session, message)
-        if result is not None:
-            yield result
-    
-    async def _handle_pack_selection(self, event: AstrMessageEvent, session: dict, message: str):
-        """处理pack选择"""
-        all_packs = self._get_all_packs()
-        
-        # 尝试匹配pack名（不分大小写）
-        matched_pack = None
-        for pack in all_packs:
-            if message.lower() == pack.lower():
-                matched_pack = pack
-                break
-        
-        if matched_pack is None:
-            return event.plain_result("贴纸包不存在，请重新输入:")
-
-        session["pack"] = matched_pack
-        session["step"] = "select_character"
-
-        character_list_msg = "请选择角色(输入数字):"
-        response_text = f"已选择贴纸包: {matched_pack}\n{character_list_msg}"
-
-        if matched_pack == "arcaea":
-            # arcaea 使用专用角色列表图
-            arcaea_image = self._load_image_as_base64("arcaea_list.jpg")
-            if arcaea_image:
-                return event.chain_result([
-                    Comp.Plain(text=response_text),
-                    Comp.Image(file=f"base64://{arcaea_image}")
-                ])
-        else:
-            # pjsk 使用通用角色列表图
-            character_list_image = self._load_image_as_base64("characterListWithIndex.jpeg")
-            if character_list_image:
-                return event.chain_result([
-                    Comp.Plain(text=response_text),
-                    Comp.Image(file=f"base64://{character_list_image}")
-                ])
-
-        return event.plain_result(response_text)
-    
-    async def _handle_character_selection(self, event: AstrMessageEvent, session: dict, message: str):
-        """处理角色选择"""
-        pack = session["pack"]
-        characters = self._get_characters_in_pack(pack)
-
-        # 检查输入是否是有效的角色ID
-        if message not in characters:
-            return event.plain_result("角色不存在，请重新输入角色数字:")
-
-        character_data = characters[message]
-        character_name = character_data["name"]
-        session["character"] = character_name
-        session["character_id"] = message
-
-        if pack == "arcaea":
-            # arcaea: 跳过 style 选择，直接用第一个 style（如有）
-            styles = character_data.get("styles", [])
-            session["style_id"] = styles[0] if styles else None
-            session["step"] = "input_text"
-            return event.plain_result(f"已选择角色: {character_name}\n请输入要显示的文字:")
-        else:
-            # pjsk: 进入 style 选择
-            session["step"] = "select_style"
-
-            # 获取该角色的动作列表
-            styles = character_data["styles"]
-            id_list = character_data["id"]
-
-            # 创建id到style的映射
-            id_to_style = {id_val: style for id_val, style in zip(id_list, styles)}
-
-            # 保存映射到会话中
-            session["id_to_style"] = id_to_style
-
-            style_list_msg = "请选择动作(输入数字):"
-            response_text = f"已选择角色: {character_name}\n{style_list_msg}"
-
-            character_image = self._load_image_as_base64(f"{character_name}.jpeg")
-            if character_image:
-                return event.chain_result([
-                    Comp.Plain(text=response_text),
-                    Comp.Image(file=f"base64://{character_image}")
-                ])
-
-            return event.plain_result(response_text)
-    
-    async def _handle_style_selection(self, event: AstrMessageEvent, session: dict, message: str):
-        """处理动作/样式选择"""
-        try:
-            selected_id = int(message)
-            id_to_style = session.get("id_to_style", {})
-            
-            if selected_id not in id_to_style:
-                return event.plain_result(f"请输入有效的动作数字，可选项: {', '.join(map(str, id_to_style.keys()))}")
-            
-            selected_style = id_to_style[selected_id]
-            session["style_id"] = selected_style
-            session["step"] = "input_text"
-            
-            return event.plain_result("请输入要显示的文字:")
-            
-        except ValueError:
-            return event.plain_result("请输入有效的数字:")
-    
-    async def _handle_text_input(self, event: AstrMessageEvent, session: dict, message: str):
-        """处理文字输入并生成贴纸"""
-        session_key = self._get_session_key(event)
-        
-        try:
-            session["text"] = message
-            
-            # 构建URL
-            url = self._build_sticker_url(
-                session["pack"],
-                session["character"], 
-                session["style_id"],
-                session["text"]
-            )
-            
-            # 下载图片并转换为base64
-            try:
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(url, timeout=30.0)
-                    if response.status_code == 200:
-                        image_bytes = response.content
-                        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-                        
-                        # 结束会话
-                        if session_key in self.sessions:
-                            del self.sessions[session_key]
-                        
-                        # 使用 base64:// URI 格式发送图片
-                        return event.chain_result([
-                            Comp.Image(file=f"base64://{image_base64}"),
-                            Comp.Plain(text="贴纸生成完成！如需再次生成，请输入 /draw")
-                        ])
-                    else:
-                        logger.error(f"下载图片失败，状态码: {response.status_code}")
-                        if session_key in self.sessions:
-                            del self.sessions[session_key]
-                        return event.plain_result(f"图片生成失败，请重试。如需再次生成，请输入 /draw")
-            except Exception as e:
-                logger.error(f"下载图片时出错: {e}")
-                if session_key in self.sessions:
-                    del self.sessions[session_key]
-                return event.plain_result(f"图片下载失败: {str(e)}\n如需再次生成，请输入 /draw")
-            
-        except Exception as e:
-            logger.error(f"处理贴纸会话时出错: {e}")
-            if session_key in self.sessions:
-                del self.sessions[session_key]
-            return event.plain_result("处理过程中出现错误，请重新开始")
-    
-    def _build_sticker_url(self, pack, character, style_id, text):
-        """构建贴纸URL"""
-        if not self.api_url:
-            raise ValueError("API URL 未配置")
-        base_url = self.api_url
-
-        if pack == "arcaea":
-            # arcaea: style 有值则追加后缀（如 hikari1.png, tairitsu2.png）
-            char_lower = character.lower()
-            filename = f"{char_lower}{style_id}.png" if style_id else f"{char_lower}.png"
-            image_path = f"https://raw.githubusercontent.com/kamicry/arcpjsk-hub/main/arcaea/{character}/{filename}"
-        else:
-            # pjsk: 保留 style_id
-            image_path = f"https://raw.githubusercontent.com/kamicry/arcpjsk-hub/main/pjsk/{character}/{character}_{style_id}.png"
-
-        encoded_text = urllib.parse.quote(text)
-
-        return f"{base_url}?type={pack}&path={image_path}&key={encoded_text}"
-    
     async def terminate(self):
-        """插件销毁时清理资源"""
-        self.sessions.clear()
-        logger.info("贴纸插件已清理")
+        self._stopping = True
+        self._connected.clear()
+        if self._connection_task is not None:
+            self._connection_task.cancel()
+            try:
+                await self._connection_task
+            except asyncio.CancelledError:
+                pass
+        self._connection_task = None
+        self._ws = None
+        self._task_states.clear()
+        self._task_origins.clear()
+        logger.info("CGRA client plugin stopped")
+
+    def _config(self, key: str, default: Any) -> Any:
+        if isinstance(self.config, dict):
+            return self.config.get(key, default)
+        getter = getattr(self.config, "get", None)
+        return getter(key, default) if callable(getter) else default
+
+    async def _connection_loop(self):
+        while not self._stopping:
+            try:
+                async with websockets.connect(
+                    self.ws_url,
+                    ping_interval=20,
+                    ping_timeout=20,
+                    open_timeout=self.connect_timeout,
+                ) as websocket:
+                    self._ws = websocket
+                    self._connected.set()
+                    logger.info("Connected to CGRA WebSocket: %s", self.ws_url)
+                    async for raw_message in websocket:
+                        await self._handle_message(raw_message)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if not self._stopping:
+                    logger.warning("CGRA WebSocket disconnected: %s", exc)
+            finally:
+                self._ws = None
+                self._connected.clear()
+            if not self._stopping:
+                await asyncio.sleep(3)
+
+    async def _handle_message(self, raw_message: str | bytes):
+        try:
+            message = json.loads(raw_message)
+        except (TypeError, json.JSONDecodeError):
+            logger.warning("Ignored invalid CGRA WebSocket message")
+            return
+        if not isinstance(message, dict):
+            return
+
+        event = message.get("event")
+        if event == "connected":
+            return
+        if event == "accepted" and self._accepted_waiter is not None:
+            if not self._accepted_waiter.done():
+                self._accepted_waiter.set_result(message)
+            return
+        if event == "server_status" and self._server_status_waiter is not None:
+            if not self._server_status_waiter.done():
+                self._server_status_waiter.set_result(message)
+            return
+        if event != "task_status":
+            if event == "error":
+                logger.warning("CGRA WebSocket error: %s", message.get("error", "unknown error"))
+            return
+
+        task_id = str(message.get("task_id", ""))
+        if not task_id:
+            return
+        self._task_states[task_id] = message
+        waiter = self._task_waiters.pop(task_id, None)
+        if waiter is not None and not waiter.done():
+            waiter.set_result(message)
+
+        if message.get("status") in TERMINAL_STATES:
+            origin = self._task_origins.pop(task_id, None)
+            if origin is not None and self.notify_completion:
+                asyncio.create_task(self._notify_task_terminal(origin, message))
+
+    async def _wait_for_connection(self):
+        if self._ws is not None and self._connected.is_set():
+            return
+        try:
+            await asyncio.wait_for(self._connected.wait(), timeout=self.connect_timeout)
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(f"无法连接 CGRA WebSocket：{self.ws_url}") from exc
+
+    async def _send(self, message: dict[str, Any]):
+        await self._wait_for_connection()
+        async with self._send_lock:
+            if self._ws is None:
+                raise RuntimeError("CGRA WebSocket 已断开")
+            await self._ws.send(json.dumps(message, ensure_ascii=False))
+
+    async def _submit(self, event: AstrMessageEvent, payload: dict[str, Any]) -> str:
+        async with self._submit_lock:
+            loop = asyncio.get_running_loop()
+            accepted_waiter: asyncio.Future[dict[str, Any]] = loop.create_future()
+            self._accepted_waiter = accepted_waiter
+            try:
+                await self._send({"action": "submit", **payload})
+                accepted = await asyncio.wait_for(accepted_waiter, timeout=self.connect_timeout)
+            finally:
+                self._accepted_waiter = None
+        task_id = str(accepted["task_id"])
+        self._task_origins[task_id] = event.unified_msg_origin
+        return task_id
+
+    async def _query_task(self, task_id: str) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        waiter: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._task_waiters[task_id] = waiter
+        try:
+            await self._send({"action": "status", "task_id": task_id})
+            return await asyncio.wait_for(waiter, timeout=self.connect_timeout)
+        finally:
+            self._task_waiters.pop(task_id, None)
+
+    async def _query_server(self) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        waiter: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._server_status_waiter = waiter
+        try:
+            await self._send({"action": "status"})
+            return await asyncio.wait_for(waiter, timeout=self.connect_timeout)
+        finally:
+            self._server_status_waiter = None
+
+    async def _notify_task_terminal(self, origin: Any, message: dict[str, Any]):
+        task_id = message["task_id"]
+        status = message.get("status", "unknown")
+        if status == "completed":
+            text = f"CGRA 任务完成\n任务 ID：{task_id}\n{self._format_result(message.get('result'))}"
+        elif status == "cancelled":
+            text = f"CGRA 任务已取消\n任务 ID：{task_id}"
+        else:
+            text = f"CGRA 任务失败\n任务 ID：{task_id}\n错误：{message.get('error', '未知错误')}"
+        try:
+            await self.context.send_message(origin, MessageChain().message(text))
+        except Exception as exc:
+            logger.warning("Failed to notify CGRA task result to QQ: %s", exc)
+
+    @staticmethod
+    def _format_result(result: Any) -> str:
+        if not isinstance(result, dict):
+            return str(result)
+        safe_result = dict(result)
+        nested = safe_result.get("result")
+        if isinstance(nested, dict) and isinstance(nested.get("image_base64"), str):
+            nested = dict(nested)
+            nested["image_base64"] = "[截图 Base64 已省略]"
+            safe_result["result"] = nested
+        text = json.dumps(safe_result, ensure_ascii=False, indent=2)
+        return text[:1200] + ("\n..." if len(text) > 1200 else "")
+
+    def _is_allowed(self, event: AstrMessageEvent) -> bool:
+        return not self.allowed_users or str(event.get_sender_id()) in self.allowed_users
+
+    @staticmethod
+    def _parse_params(parts: list[str]) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        for part in parts:
+            if "=" not in part:
+                raise ValueError(f"参数格式错误：{part}，应为 key=value")
+            key, value = part.split("=", 1)
+            key = key.strip()
+            if not key:
+                raise ValueError("参数名不能为空")
+            lowered = value.lower()
+            if lowered in {"true", "false"}:
+                params[key] = lowered == "true"
+            else:
+                try:
+                    params[key] = int(value)
+                except ValueError:
+                    try:
+                        params[key] = float(value)
+                    except ValueError:
+                        params[key] = value
+        return params
+
+    @staticmethod
+    def _command_args(event: AstrMessageEvent) -> list[str]:
+        text = event.message_str.strip()
+        for prefix in ("/cgra", "cgra"):
+            if text.lower().startswith(prefix):
+                text = text[len(prefix):].strip()
+                break
+        return shlex.split(text) if text else []
+
+    @filter.command("cgra")
+    async def cgra_command(self, event: AstrMessageEvent):
+        """CGRA 云游戏控制命令。"""
+        if not self._is_allowed(event):
+            yield event.plain_result("你没有使用 CGRA 控制插件的权限。")
+            return
+
+        try:
+            args = self._command_args(event)
+        except ValueError as exc:
+            yield event.plain_result(f"命令解析失败：{exc}")
+            return
+        if not args or args[0].lower() == "help":
+            yield event.plain_result(self._help_text())
+            return
+
+        action = args[0].lower()
+        try:
+            if action == "task":
+                if len(args) < 2:
+                    raise ValueError("用法：/cgra task <任务名> [key=value ...]")
+                task_id = await self._submit(event, {
+                    "task": args[1],
+                    "params": self._parse_params(args[2:]),
+                })
+                yield event.plain_result(f"CGRA 任务已提交\n任务 ID：{task_id}\n可用 /cgra status {task_id} 查询，或 /cgra cancel {task_id} 取消。")
+            elif action in {"cv", "ocr"}:
+                if len(args) != 2:
+                    raise ValueError(f"用法：/cgra {action} <Maa任务名>")
+                task_id = await self._submit(event, {
+                    "cvtask" if action == "cv" else "ocrtask": args[1],
+                    "params": {},
+                })
+                yield event.plain_result(f"Maa {action.upper()} 任务已提交\n任务 ID：{task_id}")
+            elif action == "status":
+                if len(args) == 1:
+                    server = await self._query_server()
+                    yield event.plain_result(f"CGRA 服务状态\n{self._format_result(server.get('status'))}")
+                else:
+                    task = await self._query_task(args[1])
+                    yield event.plain_result(f"CGRA 任务状态\n{self._format_result(task)}")
+            elif action == "cancel":
+                if len(args) != 2:
+                    raise ValueError("用法：/cgra cancel <任务ID>")
+                await self._send({"action": "cancel", "task_id": args[1]})
+                yield event.plain_result(f"已发送取消请求：{args[1]}")
+            else:
+                yield event.plain_result(self._help_text())
+        except Exception as exc:
+            logger.exception("CGRA command failed")
+            yield event.plain_result(f"CGRA 操作失败：{exc}")
+
+    @staticmethod
+    def _help_text() -> str:
+        return """CGRA 云游戏控制
+
+/cgra task <任务名> [key=value ...]
+  例：/cgra task run
+  例：/cgra task click x=0.5 y=0.5
+  例：/cgra task wait seconds=20
+/cgra cv <Maa TemplateMatch 任务名>
+/cgra ocr <Maa OcrDetect 任务名>
+/cgra status [任务ID]
+/cgra cancel <任务ID>
+
+提交后会返回任务 ID；任务完成、失败或取消时会自动通知当前 QQ 会话。"""

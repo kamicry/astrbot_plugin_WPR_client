@@ -1,8 +1,25 @@
 {
-  "api_url": {
-    "description": "pjsk-arcaea表情包生成器 API 的部署 URL",
+  "ws_url": {
+    "description": "CGRA WebSocket 地址",
     "type": "string",
-    "default": "",
-    "hint": "例如：https://your-project.vercel.app/api/overlay-text 默认不提供，请查看项目仓库进行后端api布置。"
+    "default": "ws://127.0.0.1:8765/ws",
+    "hint": "CGRA 与 AstrBot 在同一台电脑时保持默认；远程部署时改为 ws://主机地址:端口/ws。"
+  },
+  "connect_timeout": {
+    "description": "连接与请求等待超时（秒）",
+    "type": "int",
+    "default": 10,
+    "hint": "WebSocket 未连接时，命令等待连接建立的最长时间。"
+  },
+  "notify_completion": {
+    "description": "任务终态时主动通知发起会话",
+    "type": "bool",
+    "default": true
+  },
+  "allowed_users": {
+    "description": "允许使用插件的 QQ 用户 ID 列表",
+    "type": "list",
+    "default": [],
+    "hint": "留空表示不限制；填写后只有列表中的用户可执行控制命令。"
   }
 }
