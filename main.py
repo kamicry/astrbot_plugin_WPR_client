@@ -225,13 +225,20 @@ class CGRAClientPlugin(Star):
         status = message.get("status", "unknown")
         elapsed = self._format_elapsed(message.get("elapsed_ms"))
         if status == "completed":
-            text = f"CGRA 任务完成\n任务 ID：{task_id}\n耗时：{elapsed}\n{self._format_result(message.get('result'))}"
+            text = f"CGRA 任务完成\n任务 ID：{task_id}\n耗时：{elapsed}\n{self._format_task_result(message)}"
         elif status == "cancelled":
             text = f"CGRA 任务已取消\n任务 ID：{task_id}\n耗时：{elapsed}"
         else:
             text = f"CGRA 任务失败\n任务 ID：{task_id}\n耗时：{elapsed}\n错误：{message.get('error', '未知错误')}"
         try:
-            screenshot = await self._save_screenshot(task_id, message.get("screenshot_base64"))
+            encoded_image = self._extract_screenshot(message)
+            if encoded_image is None:
+                try:
+                    latest = await self._query_task(task_id)
+                    encoded_image = self._extract_screenshot(latest)
+                except Exception as exc:
+                    logger.warning("Failed to fetch CGRA task status screenshot: %s", exc)
+            screenshot = await self._save_screenshot(task_id, encoded_image)
             chain = MessageChain().message(text)
             if screenshot is not None:
                 chain = chain.file_image(str(screenshot))
@@ -259,9 +266,16 @@ class CGRAClientPlugin(Star):
             return "未知"
 
     async def _task_status_response(self, event: AstrMessageEvent, task: dict[str, Any]):
-        text = f"CGRA 任务状态\n{self._format_result(task)}"
+        task_info = task.get("task", {})
+        task_name = task_info.get("name", "未知任务") if isinstance(task_info, dict) else "未知任务"
+        text = (
+            f"CGRA 任务状态\n任务：{task_name}\n"
+            f"状态：{task.get('status', '未知')}\n"
+            f"耗时：{self._format_elapsed(task.get('elapsed_ms'))}\n"
+            f"{self._format_task_result(task)}"
+        )
         task_id = str(task.get("task_id", "status"))
-        screenshot = await self._save_screenshot(f"status-{task_id}", task.get("screenshot_base64"))
+        screenshot = await self._save_screenshot(f"status-{task_id}", self._extract_screenshot(task))
         if screenshot is None:
             return event.plain_result(text)
         return event.chain_result([
@@ -270,17 +284,42 @@ class CGRAClientPlugin(Star):
         ])
 
     @staticmethod
+    def _extract_screenshot(message: dict[str, Any]) -> str | None:
+        image = message.get("screenshot_base64")
+        if isinstance(image, str) and image:
+            return image
+        result = message.get("result")
+        if not isinstance(result, dict):
+            return None
+        inner = result.get("result")
+        if isinstance(inner, dict):
+            image = inner.get("image_base64")
+            if isinstance(image, str) and image:
+                return image
+        return None
+
+    @staticmethod
     def _format_result(result: Any) -> str:
         if not isinstance(result, dict):
             return str(result)
-        safe_result = dict(result)
-        nested = safe_result.get("result")
-        if isinstance(nested, dict) and isinstance(nested.get("image_base64"), str):
-            nested = dict(nested)
-            nested["image_base64"] = "[截图 Base64 已省略]"
-            safe_result["result"] = nested
-        text = json.dumps(safe_result, ensure_ascii=False, indent=2)
-        return text[:1200] + ("\n..." if len(text) > 1200 else "")
+        task_type = result.get("type")
+        nested = result.get("result")
+        if task_type == "task_template" and isinstance(nested, dict):
+            return f"已执行模板：{nested.get('template', '未知')}"
+        if task_type == "maa_task" and isinstance(nested, dict):
+            matched = "识别成功" if nested.get("matched") else "未识别到目标"
+            return f"Maa 任务：{nested.get('task_name', '未知')}，{matched}"
+        if task_type == "screenshot":
+            return "截图已获取"
+        if isinstance(nested, dict):
+            keys = ", ".join(str(key) for key in nested if key != "image_base64")
+            return f"任务类型：{task_type or '未知'}" + (f"，结果字段：{keys}" if keys else "")
+        return f"任务类型：{task_type or '未知'}"
+
+    def _format_task_result(self, message: dict[str, Any]) -> str:
+        task = message.get("task", {})
+        name = task.get("name", "未知任务") if isinstance(task, dict) else "未知任务"
+        return f"任务：{name}\n{self._format_result(message.get('result'))}"
 
     def _is_allowed(self, event: AstrMessageEvent) -> bool:
         return not self.allowed_users or str(event.get_sender_id()) in self.allowed_users
@@ -438,10 +477,14 @@ class CGRAClientPlugin(Star):
             f"{index}. {step.get('description', step.get('type', '未知步骤'))}"
             for index, step in enumerate(flow, 1)
         ) or "服务端未提供流程"
-        task_json = json.dumps(accepted.get("task", {}), ensure_ascii=False)
+        task = accepted.get("task", {})
+        task_name = task.get("name", "未知任务") if isinstance(task, dict) else "未知任务"
+        task_kind = task.get("kind", "task") if isinstance(task, dict) else "task"
+        params = task.get("params", {}) if isinstance(task, dict) else {}
+        param_text = "，".join(f"{key}={value}" for key, value in params.items()) if params else "无"
         return (
             f"CGRA 任务已提交\n任务 ID：{accepted['task_id']}\n"
-            f"任务 JSON：{task_json}\n大致流程：\n{flow_text}\n"
+            f"任务：{task_name}（{task_kind}）\n参数：{param_text}\n大致流程：\n{flow_text}\n"
             f"可发送 status {accepted['task_id']} 查询，或 cancel {accepted['task_id']} 取消。"
         )
 
