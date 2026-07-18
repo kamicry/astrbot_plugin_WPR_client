@@ -6,7 +6,7 @@
 
 - 使用 `/wpr start` 建立 QQ 控制会话，后续直接发送任务文本。
 - 提交 `task` 命名模板或自由参数任务。
-- 提交 Maa `TemplateMatch` 与 `OcrDetect` 单任务。
+- 提交 OpenCV 模板匹配与 OCR 单任务。
 - 每次提交立即回复任务 ID。
 - 查询 WPR 服务状态和单个任务状态，并返回当前截图。
 - 取消排队任务，或取消正在执行的可中断任务。
@@ -55,12 +55,12 @@ ws://192.168.1.20:8765/ws
 ```text
 run
 click x=0.5 y=0.5
-start game=mrfz
+start
 status 任务ID
 quit
 ```
 
-会话内的 `start game=mrfz` 才是提交给 WPR 的浏览器/云游戏启动任务；`/wpr start` 本身只启动 QQ 控制会话，不会打开云游戏。
+会话内的 `start` 才是提交给 WPR 的浏览器/云游戏启动任务；`/wpr start` 本身只启动 QQ 控制会话，不会打开云游戏。无参数 `start` 会直接打开明日方舟云游戏入口，不会检查、注入或等待登录状态。
 
 ## QQ 命令
 
@@ -70,7 +70,7 @@ quit
 /wpr help
 ```
 
-该命令会显示会话控制、Maa 任务、状态查询、取消、紧急关闭与浏览器标签页任务的简要用法。
+该命令会显示会话控制、OpenCV/OCR 任务、状态查询、取消、紧急关闭与浏览器标签页任务的简要用法。
 
 ### 直接提交命名模板任务
 
@@ -87,7 +87,8 @@ quit
 /wpr task click x=0.5 y=0.5
 /wpr task wait seconds=20
 /wpr task swipe x1=0.1 y1=0.5 x2=0.9 y2=0.5 duration=200
-/wpr task start game=mrfz headless=false
+/wpr task start headless=false
+/wpr task pipeline pipeline_name=mall
 ```
 
 带空格的文本请使用引号：
@@ -111,7 +112,7 @@ quit
 ### OpenCV 与 OCR 单任务
 
 ```text
-/wpr cv WakeUp/GameStart.png threshold=0.25
+/wpr cv WakeUp/StartToWakeUp.png threshold=0.8 timeout=30
 /wpr ocr 确认 threshold=0.7
 ```
 

@@ -24,7 +24,7 @@ TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
     "astrbot_plugin_wpr_client",
     "kamicry",
     "通过 QQ 控制 WPR 云游戏任务，并接收状态与取消结果。",
-    "v0.3.2",
+    "v0.3.3",
 )
 class WPRClientPlugin(Star):
     """维护一个到 WPR 的 WebSocket 连接，并把任务状态回传 QQ。"""
@@ -306,9 +306,20 @@ class WPRClientPlugin(Star):
         nested = result.get("result")
         if task_type == "task_template" and isinstance(nested, dict):
             return f"已执行模板：{nested.get('template', '未知')}"
-        if task_type == "maa_task" and isinstance(nested, dict):
-            matched = "识别成功" if nested.get("matched") else "未识别到目标"
-            return f"Maa 任务：{nested.get('task_name', '未知')}，{matched}"
+        if task_type == "cv_task" and isinstance(nested, dict):
+            return (
+                f"模板：{nested.get('template', '未知')}，"
+                f"分数：{float(nested.get('score', 0)):.3f}，"
+                f"点击：({nested.get('x', '?')}, {nested.get('y', '?')})"
+            )
+        if task_type == "ocr_task" and isinstance(nested, dict):
+            return (
+                f"文字：{nested.get('text', '未知')}，"
+                f"分数：{float(nested.get('score', 0)):.3f}，"
+                f"点击：({nested.get('x', '?')}, {nested.get('y', '?')})"
+            )
+        if task_type == "pipeline" and isinstance(nested, dict):
+            return f"流程：{nested.get('pipeline', '未知')}，已执行 {len(nested.get('nodes', []))} 个节点"
         if task_type == "screenshot":
             return "截图已获取"
         if isinstance(nested, dict):
@@ -495,8 +506,9 @@ class WPRClientPlugin(Star):
 /wpr cancel <任务ID>
 
 会话内常用任务：
-start                         启动默认明日方舟入口
+start                         启动默认明日方舟入口，不检查登录状态
 shutdown                      强制关闭浏览器并重置状态
+pipeline pipeline_name=mall  执行 OpenCV 流程
 tab_list                      列出标签页
 tab_new                       新建空白标签页
 tab_open url=https://...      新建并打开网页
