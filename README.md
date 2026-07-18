@@ -103,7 +103,7 @@ quit
 
 ### 客户端任务链
 
-任务链保存在插件数据目录的 `chains/<名称>.json` 中。每个 JSON 文件包含多个 WPR WebSocket 任务；插件只会在前一任务收到完成、失败或取消终态后，才创建下一项任务。
+任务链保存在插件目录的 `auto/<名称>.json` 中。每个 JSON 文件包含多个 WPR WebSocket 任务；插件只会在前一任务收到完成、失败或取消终态后，才创建下一项任务。
 
 ```text
 /wpr create run click&x=1&y=1 pipeline&pipeline_name=startup2

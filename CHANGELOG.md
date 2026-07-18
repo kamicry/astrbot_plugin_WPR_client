@@ -1,5 +1,9 @@
 # 更新日志
 
+## v0.4.2
+
+- 客户端任务链 JSON 改为保存在插件目录的 `auto/` 下，便于直接查看与维护。
+
 ## v0.4.1
 
 - 未进入 `/wpr start` 会话时，`/wpr task`、`/wpr cv`、`/wpr ocr` 和 `/wpr status` 改用 WPR HTTP 接口直接执行。

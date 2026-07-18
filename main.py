@@ -47,7 +47,7 @@ class ClientTaskChain:
     "astrbot_plugin_wpr_client",
     "kamicry",
     "通过 QQ 控制 WPR 云游戏任务，并接收状态与取消结果。",
-    "v0.4.1",
+    "v0.4.2",
 )
 class WPRClientPlugin(Star):
     """维护一个到 WPR 的 WebSocket 连接，并把任务状态回传 QQ。"""
@@ -64,7 +64,7 @@ class WPRClientPlugin(Star):
         self.allowed_users = {str(value) for value in (self._config("allowed_users", []) or []) if str(value)}
         self.sessions: dict[str, str] = {}
         self.screenshot_dir = Path(get_astrbot_data_path()) / "plugin_data" / self.name / "screenshots"
-        self.chain_dir = Path(get_astrbot_data_path()) / "plugin_data" / self.name / "chains"
+        self.chain_dir = Path(__file__).resolve().parent / "auto"
 
         self._ws: Any = None
         self._connected = asyncio.Event()
