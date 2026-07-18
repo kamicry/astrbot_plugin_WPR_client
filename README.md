@@ -1,23 +1,23 @@
-# CGRA QQ 控制插件
+# WPR QQ 控制插件
 
-`astrbot_plugin_cgra_client` 是 AstrBot 插件。它通过 CGRA 的 WebSocket 接口，把 QQ 命令转换为云游戏控制任务，并把任务完成、失败或取消结果主动回复到发起会话。
+`astrbot_plugin_wpr_client` 是 AstrBot 插件。它通过 WPR 的 WebSocket 接口，把 QQ 命令转换为云游戏控制任务，并把任务完成、失败或取消结果主动回复到发起会话。
 
 ## 功能
 
-- 使用 `/cgra start` 建立 QQ 控制会话，后续直接发送任务文本。
+- 使用 `/wpr start` 建立 QQ 控制会话，后续直接发送任务文本。
 - 提交 `task` 命名模板或自由参数任务。
 - 提交 Maa `TemplateMatch` 与 `OcrDetect` 单任务。
 - 每次提交立即回复任务 ID。
-- 查询 CGRA 服务状态和单个任务状态，并返回当前截图。
+- 查询 WPR 服务状态和单个任务状态，并返回当前截图。
 - 取消排队任务，或取消正在执行的可中断任务。
 - 任务结束时主动发送状态、耗时和结束截图。
-- 连接失败后停止并显示原因；再次发送 `/cgra start` 可手动重试。
+- 连接失败后停止并显示原因；再次发送 `/wpr start` 可手动重试。
 - 可配置允许使用插件的 QQ 用户 ID。
 
 ## 前置条件
 
-1. CGRA 服务已启动，并已安装 `websockets` 依赖。
-2. CGRA 的 WebSocket 地址可从 AstrBot 所在机器访问。
+1. WPR 服务已启动，并已安装 `websockets` 依赖。
+2. WPR 的 WebSocket 地址可从 AstrBot 所在机器访问。
 3. 本插件已通过 AstrBot 插件管理器安装或放入 `data/plugins/` 目录。
 
 默认地址：
@@ -26,7 +26,7 @@
 ws://127.0.0.1:8765/ws
 ```
 
-如果 AstrBot 和 CGRA 不在同一台机器，需在插件配置的 `ws_url` 中填入 CGRA 主机的局域网地址，例如：
+如果 AstrBot 和 WPR 不在同一台机器，需在插件配置的 `ws_url` 中填入 WPR 主机的局域网地址，例如：
 
 ```text
 ws://192.168.1.20:8765/ws
@@ -36,7 +36,7 @@ ws://192.168.1.20:8765/ws
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `ws_url` | `ws://127.0.0.1:8765/ws` | CGRA WebSocket 地址 |
+| `ws_url` | `ws://127.0.0.1:8765/ws` | WPR WebSocket 地址 |
 | `connect_timeout` | `10` | 连接和指令响应等待超时，单位秒 |
 | `notify_completion` | `true` | 任务进入终态时是否主动通知 QQ 会话 |
 | `capture_screenshot` | `true` | 请求任务终态和状态查询截图，并作为 QQ 图片发送 |
@@ -47,10 +47,10 @@ ws://192.168.1.20:8765/ws
 ## 启动控制会话
 
 ```text
-/cgra start
+/wpr start
 ```
 
-该命令建立与 CGRA 的 WebSocket 连接，并在当前 QQ 会话开启控制模式。进入后，无需继续输入 `/cgra` 前缀，直接发送任务文本即可；发送 `quit` 会退出控制模式并主动断开 WebSocket。
+该命令建立与 WPR 的 WebSocket 连接，并在当前 QQ 会话开启控制模式。进入后，无需继续输入 `/wpr` 前缀，直接发送任务文本即可；发送 `quit` 会退出控制模式并主动断开 WebSocket。
 
 ```text
 run
@@ -60,14 +60,14 @@ status 任务ID
 quit
 ```
 
-会话内的 `start game=mrfz` 才是提交给 CGRA 的浏览器/云游戏启动任务；`/cgra start` 本身只启动 QQ 控制会话，不会打开云游戏。
+会话内的 `start game=mrfz` 才是提交给 WPR 的浏览器/云游戏启动任务；`/wpr start` 本身只启动 QQ 控制会话，不会打开云游戏。
 
 ## QQ 命令
 
 ### 帮助
 
 ```text
-/cgra help
+/wpr help
 ```
 
 该命令会显示会话控制、Maa 任务、状态查询、取消、紧急关闭与浏览器标签页任务的简要用法。
@@ -75,8 +75,8 @@ quit
 ### 直接提交命名模板任务
 
 ```text
-/cgra task run
-/cgra task center_click
+/wpr task run
+/wpr task center_click
 ```
 
 ### 直接提交自由参数任务
@@ -84,42 +84,42 @@ quit
 参数格式为 `key=value`。数值和 `true` / `false` 会自动转换为 JSON 对应类型。
 
 ```text
-/cgra task click x=0.5 y=0.5
-/cgra task wait seconds=20
-/cgra task swipe x1=0.1 y1=0.5 x2=0.9 y2=0.5 duration=200
-/cgra task start game=mrfz headless=false
+/wpr task click x=0.5 y=0.5
+/wpr task wait seconds=20
+/wpr task swipe x1=0.1 y1=0.5 x2=0.9 y2=0.5 duration=200
+/wpr task start game=mrfz headless=false
 ```
 
 带空格的文本请使用引号：
 
 ```text
-/cgra task text text="hello world"
+/wpr task text text="hello world"
 ```
 
 ### 浏览器标签页
 
 ```text
-/cgra task tab_list
-/cgra task tab_new
-/cgra task tab_open url=https://example.com
-/cgra task tab_switch tab_index=1
-/cgra task tab_close tab_index=1
+/wpr task tab_list
+/wpr task tab_new
+/wpr task tab_open url=https://example.com
+/wpr task tab_switch tab_index=1
+/wpr task tab_close tab_index=1
 ```
 
-进入控制会话后，也可以去掉 `/cgra task` 前缀直接发送同样的任务文本。
+进入控制会话后，也可以去掉 `/wpr task` 前缀直接发送同样的任务文本。
 
 ### Maa 资源单任务
 
 ```text
-/cgra cv StartUp
-/cgra ocr GameStartUpdateOCR
+/wpr cv StartUp
+/wpr ocr GameStartUpdateOCR
 ```
 
 ### 查询状态
 
 ```text
-/cgra status
-/cgra status 任务ID
+/wpr status
+/wpr status 任务ID
 ```
 
 查询单任务状态会同时返回状态文字和一张当前游戏截图。
@@ -127,12 +127,12 @@ quit
 ### 取消任务
 
 ```text
-/cgra cancel 任务ID
+/wpr cancel 任务ID
 ```
 
 每次提交会立即返回任务 ID。任务完成、失败或取消时，插件会自动向发起命令的 QQ 私聊或群聊会话发送状态、执行耗时和任务结束截图；文字和截图会在同一条消息中依次发送。
 
-浏览器窗口被手动关闭或启动流程卡住时，直接提交 `shutdown`。该任务会强制取消未完成任务、关闭残留浏览器并重置 CGRA 状态；收到完成通知后可手动提交新的 `start`，插件和服务端不会自动重新打开浏览器。
+浏览器窗口被手动关闭或启动流程卡住时，直接提交 `shutdown`。该任务会强制取消未完成任务、关闭残留浏览器并重置 WPR 状态；收到完成通知后可手动提交新的 `start`，插件和服务端不会自动重新打开浏览器。
 
 ## 取消行为
 
@@ -146,11 +146,11 @@ quit
 使用 AstrBot 插件市场或仓库地址安装：
 
 ```text
-https://github.com/kamicry/astrbot_plugin_CGRA_client
+https://github.com/kamicry/astrbot_plugin_WPR_client
 ```
 
 本地开发时，将仓库放入 AstrBot 的 `data/plugins/` 目录后，在 AstrBot WebUI 的插件管理页面重载插件。
 
 ## 协议
 
-插件依赖 CGRA 的 WebSocket 协议。任务消息格式、状态机和错误语义请查看 CGRA 项目的 `WEBSOCKET_API.md`。
+插件依赖 WPR 的 WebSocket 协议。任务消息格式、状态机和错误语义请查看 WPR 项目的 `WEBSOCKET_API.md`。

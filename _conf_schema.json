@@ -1,9 +1,9 @@
 {
   "ws_url": {
-    "description": "CGRA WebSocket 地址",
+    "description": "WPR WebSocket 地址",
     "type": "string",
     "default": "ws://127.0.0.1:8765/ws",
-    "hint": "CGRA 与 AstrBot 在同一台电脑时保持默认；远程部署时改为 ws://主机地址:端口/ws。"
+    "hint": "WPR 与 AstrBot 在同一台电脑时保持默认；远程部署时改为 ws://主机地址:端口/ws。"
   },
   "connect_timeout": {
     "description": "连接与请求等待超时（秒）",
@@ -17,7 +17,7 @@
     "default": true
   },
   "capture_screenshot": {
-    "description": "任务终态和状态查询时请求 CGRA 截图",
+    "description": "任务终态和状态查询时请求 WPR 截图",
     "type": "bool",
     "default": true,
     "hint": "开启后，插件会把任务结束截图或状态查询截图作为 QQ 图片发送。"

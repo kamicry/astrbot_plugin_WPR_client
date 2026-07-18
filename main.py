@@ -1,4 +1,4 @@
-"""CGRA 的 AstrBot QQ 控制插件。"""
+"""WPR 的 AstrBot QQ 控制插件。"""
 
 from __future__ import annotations
 
@@ -21,13 +21,13 @@ TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
 
 
 @register(
-    "astrbot_plugin_cgra_client",
+    "astrbot_plugin_wpr_client",
     "kamicry",
-    "通过 QQ 控制 CGRA 云游戏任务，并接收状态与取消结果。",
-    "v0.2.0",
+    "通过 QQ 控制 WPR 云游戏任务，并接收状态与取消结果。",
+    "v0.3.1",
 )
-class CGRAClientPlugin(Star):
-    """维护一个到 CGRA 的 WebSocket 连接，并把任务状态回传 QQ。"""
+class WPRClientPlugin(Star):
+    """维护一个到 WPR 的 WebSocket 连接，并把任务状态回传 QQ。"""
 
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
@@ -55,14 +55,14 @@ class CGRAClientPlugin(Star):
 
     async def initialize(self):
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("CGRA client plugin initialized; use /cgra start to connect: %s", self.ws_url)
+        logger.info("WPR client plugin initialized; use /wpr start to connect: %s", self.ws_url)
 
     async def terminate(self):
         await self._disconnect()
         self.sessions.clear()
         self._task_states.clear()
         self._task_origins.clear()
-        logger.info("CGRA client plugin stopped")
+        logger.info("WPR client plugin stopped")
 
     async def _start_connection(self):
         self._stopping = False
@@ -70,7 +70,7 @@ class CGRAClientPlugin(Star):
         if self._connection_task is None or self._connection_task.done():
             self._connection_task = asyncio.create_task(
                 self._connection_loop(),
-                name="cgra-astrbot-websocket",
+                name="wpr-astrbot-websocket",
             )
         await self._wait_for_connection()
 
@@ -109,7 +109,7 @@ class CGRAClientPlugin(Star):
                 ) as websocket:
                     self._ws = websocket
                     self._connected.set()
-                    logger.info("Connected to CGRA WebSocket: %s", self.ws_url)
+                    logger.info("Connected to WPR WebSocket: %s", self.ws_url)
                     async for raw_message in websocket:
                         await self._handle_message(raw_message)
             except asyncio.CancelledError:
@@ -117,7 +117,7 @@ class CGRAClientPlugin(Star):
             except Exception as exc:
                 if not self._stopping:
                     self._last_connection_error = str(exc)
-                    logger.warning("CGRA WebSocket disconnected: %s", exc)
+                    logger.warning("WPR WebSocket disconnected: %s", exc)
             finally:
                 self._ws = None
                 self._connected.clear()
@@ -127,7 +127,7 @@ class CGRAClientPlugin(Star):
         try:
             message = json.loads(raw_message)
         except (TypeError, json.JSONDecodeError):
-            logger.warning("Ignored invalid CGRA WebSocket message")
+            logger.warning("Ignored invalid WPR WebSocket message")
             return
         if not isinstance(message, dict):
             return
@@ -145,7 +145,7 @@ class CGRAClientPlugin(Star):
             return
         if event != "task_status":
             if event == "error":
-                logger.warning("CGRA WebSocket error: %s", message.get("error", "unknown error"))
+                logger.warning("WPR WebSocket error: %s", message.get("error", "unknown error"))
             return
 
         task_id = str(message.get("task_id", ""))
@@ -165,18 +165,18 @@ class CGRAClientPlugin(Star):
         if self._ws is not None and self._connected.is_set():
             return
         if self._connection_task is None or self._connection_task.done():
-            raise RuntimeError("尚未连接 CGRA，请先发送 /cgra start")
+            raise RuntimeError("尚未连接 WPR，请先发送 /wpr start")
         try:
             await asyncio.wait_for(self._connected.wait(), timeout=self.connect_timeout)
         except asyncio.TimeoutError as exc:
             detail = f"：{self._last_connection_error}" if self._last_connection_error else ""
-            raise RuntimeError(f"无法连接 CGRA WebSocket：{self.ws_url}{detail}") from exc
+            raise RuntimeError(f"无法连接 WPR WebSocket：{self.ws_url}{detail}") from exc
 
     async def _send(self, message: dict[str, Any]):
         await self._wait_for_connection()
         async with self._send_lock:
             if self._ws is None:
-                raise RuntimeError("CGRA WebSocket 已断开")
+                raise RuntimeError("WPR WebSocket 已断开")
             await self._ws.send(json.dumps(message, ensure_ascii=False))
 
     async def _submit(self, event: AstrMessageEvent, payload: dict[str, Any]) -> dict[str, Any]:
@@ -225,11 +225,11 @@ class CGRAClientPlugin(Star):
         status = message.get("status", "unknown")
         elapsed = self._format_elapsed(message.get("elapsed_ms"))
         if status == "completed":
-            text = f"CGRA 任务完成\n任务 ID：{task_id}\n耗时：{elapsed}\n{self._format_task_result(message)}"
+            text = f"WPR 任务完成\n任务 ID：{task_id}\n耗时：{elapsed}\n{self._format_task_result(message)}"
         elif status == "cancelled":
-            text = f"CGRA 任务已取消\n任务 ID：{task_id}\n耗时：{elapsed}"
+            text = f"WPR 任务已取消\n任务 ID：{task_id}\n耗时：{elapsed}"
         else:
-            text = f"CGRA 任务失败\n任务 ID：{task_id}\n耗时：{elapsed}\n错误：{message.get('error', '未知错误')}"
+            text = f"WPR 任务失败\n任务 ID：{task_id}\n耗时：{elapsed}\n错误：{message.get('error', '未知错误')}"
         try:
             encoded_image = self._extract_screenshot(message)
             if encoded_image is None:
@@ -237,14 +237,14 @@ class CGRAClientPlugin(Star):
                     latest = await self._query_task(task_id)
                     encoded_image = self._extract_screenshot(latest)
                 except Exception as exc:
-                    logger.warning("Failed to fetch CGRA task status screenshot: %s", exc)
+                    logger.warning("Failed to fetch WPR task status screenshot: %s", exc)
             screenshot = await self._save_screenshot(task_id, encoded_image)
             components: list[Any] = [Comp.Plain(text=text)]
             if screenshot is not None:
                 components.append(Comp.Image.fromFileSystem(str(screenshot)))
             await self.context.send_message(origin, MessageChain(components))
         except Exception as exc:
-            logger.warning("Failed to notify CGRA task result to QQ: %s", exc)
+            logger.warning("Failed to notify WPR task result to QQ: %s", exc)
 
     async def _save_screenshot(self, task_id: str, encoded_image: Any) -> Path | None:
         if not isinstance(encoded_image, str) or not encoded_image:
@@ -255,7 +255,7 @@ class CGRAClientPlugin(Star):
             await asyncio.to_thread(path.write_bytes, raw)
             return path
         except (ValueError, OSError) as exc:
-            logger.warning("Failed to save CGRA task screenshot: %s", exc)
+            logger.warning("Failed to save WPR task screenshot: %s", exc)
             return None
 
     @staticmethod
@@ -269,7 +269,7 @@ class CGRAClientPlugin(Star):
         task_info = task.get("task", {})
         task_name = task_info.get("name", "未知任务") if isinstance(task_info, dict) else "未知任务"
         text = (
-            f"CGRA 任务状态\n任务：{task_name}\n"
+            f"WPR 任务状态\n任务：{task_name}\n"
             f"状态：{task.get('status', '未知')}\n"
             f"耗时：{self._format_elapsed(task.get('elapsed_ms'))}\n"
             f"{self._format_task_result(task)}"
@@ -350,17 +350,17 @@ class CGRAClientPlugin(Star):
     @staticmethod
     def _command_args(event: AstrMessageEvent) -> list[str]:
         text = event.message_str.strip()
-        for prefix in ("/cgra", "cgra"):
+        for prefix in ("/wpr", "wpr"):
             if text.lower().startswith(prefix):
                 text = text[len(prefix):].strip()
                 break
         return shlex.split(text) if text else []
 
-    @filter.command("cgra")
-    async def cgra_command(self, event: AstrMessageEvent):
-        """CGRA 云游戏控制命令。"""
+    @filter.command("wpr")
+    async def wpr_command(self, event: AstrMessageEvent):
+        """WPR 云游戏控制命令。"""
         if not self._is_allowed(event):
-            yield event.plain_result("你没有使用 CGRA 控制插件的权限。")
+            yield event.plain_result("你没有使用 WPR 控制插件的权限。")
             return
 
         try:
@@ -377,10 +377,10 @@ class CGRAClientPlugin(Star):
             if action == "start":
                 await self._start_connection()
                 self.sessions[event.unified_msg_origin] = str(event.get_sender_id())
-                yield event.plain_result("CGRA 控制会话已启动并连接 WebSocket。\n直接发送任务名或命令，例如：run、click x=0.5 y=0.5、start。\n发送 help 查看命令，发送 quit 退出会话并断开连接。")
+                yield event.plain_result("WPR 控制会话已启动并连接 WebSocket。\n直接发送任务名或命令，例如：run、click x=0.5 y=0.5、start。\n发送 help 查看命令，发送 quit 退出会话并断开连接。")
             elif action == "task":
                 if len(args) < 2:
-                    raise ValueError("用法：/cgra task <任务名> [key=value ...]")
+                    raise ValueError("用法：/wpr task <任务名> [key=value ...]")
                 accepted = await self._submit(event, {
                     "task": args[1],
                     "params": self._parse_params(args[2:]),
@@ -388,7 +388,7 @@ class CGRAClientPlugin(Star):
                 yield event.plain_result(self._accepted_text(accepted))
             elif action in {"cv", "ocr"}:
                 if len(args) != 2:
-                    raise ValueError(f"用法：/cgra {action} <Maa任务名>")
+                    raise ValueError(f"用法：/wpr {action} <Maa任务名>")
                 accepted = await self._submit(event, {
                     "cvtask" if action == "cv" else "ocrtask": args[1],
                     "params": {},
@@ -397,28 +397,28 @@ class CGRAClientPlugin(Star):
             elif action == "status":
                 if len(args) == 1:
                     server = await self._query_server()
-                    yield event.plain_result(f"CGRA 服务状态\n{self._format_result(server.get('status'))}")
+                    yield event.plain_result(f"WPR 服务状态\n{self._format_result(server.get('status'))}")
                 else:
                     task = await self._query_task(args[1])
                     yield await self._task_status_response(event, task)
             elif action == "cancel":
                 if len(args) != 2:
-                    raise ValueError("用法：/cgra cancel <任务ID>")
+                    raise ValueError("用法：/wpr cancel <任务ID>")
                 await self._send({"action": "cancel", "task_id": args[1]})
                 yield event.plain_result(f"已发送取消请求：{args[1]}")
             elif action == "quit":
                 self.sessions.pop(event.unified_msg_origin, None)
                 await self._disconnect()
-                yield event.plain_result("CGRA 控制会话已退出，WebSocket 已断开。")
+                yield event.plain_result("WPR 控制会话已退出，WebSocket 已断开。")
             else:
                 yield event.plain_result(self._help_text())
         except Exception as exc:
-            logger.exception("CGRA command failed")
-            yield event.plain_result(f"CGRA 操作失败：{exc}")
+            logger.exception("WPR command failed")
+            yield event.plain_result(f"WPR 操作失败：{exc}")
 
     @filter.regex(r".*")
     async def session_message(self, event: AstrMessageEvent):
-        """处理 /cgra start 后同一 QQ 会话内的控制文本。"""
+        """处理 /wpr start 后同一 QQ 会话内的控制文本。"""
         origin = event.unified_msg_origin
         owner_id = self.sessions.get(origin)
         if owner_id is None or owner_id != str(event.get_sender_id()):
@@ -429,7 +429,7 @@ class CGRAClientPlugin(Star):
         if message.lower() == "quit":
             self.sessions.pop(origin, None)
             await self._disconnect()
-            yield event.plain_result("CGRA 控制会话已退出，WebSocket 已断开。")
+            yield event.plain_result("WPR 控制会话已退出，WebSocket 已断开。")
             return
         try:
             parts = shlex.split(message)
@@ -441,7 +441,7 @@ class CGRAClientPlugin(Star):
             elif action == "status":
                 if len(parts) == 1:
                     server = await self._query_server()
-                    yield event.plain_result(f"CGRA 服务状态\n{self._format_result(server.get('status'))}")
+                    yield event.plain_result(f"WPR 服务状态\n{self._format_result(server.get('status'))}")
                 else:
                     task = await self._query_task(parts[1])
                     yield await self._task_status_response(event, task)
@@ -467,30 +467,30 @@ class CGRAClientPlugin(Star):
                 })
                 yield event.plain_result(self._accepted_text(accepted))
         except Exception as exc:
-            logger.exception("CGRA session command failed")
-            yield event.plain_result(f"CGRA 操作失败：{exc}")
+            logger.exception("WPR session command failed")
+            yield event.plain_result(f"WPR 操作失败：{exc}")
 
     @staticmethod
     def _accepted_text(accepted: dict[str, Any]) -> str:
-        return f"CGRA 任务已提交\n任务 ID：{accepted['task_id']}"
+        return f"WPR 任务已提交\n任务 ID：{accepted['task_id']}"
 
     @staticmethod
     def _help_text() -> str:
-        return """CGRA 云游戏控制
+        return """WPR 云游戏控制
 
- /cgra help
+ /wpr help
   显示本帮助。
- /cgra start
+ /wpr start
   建立 WebSocket 控制会话；会话中直接发送任务文本，quit 退出并断开。
-/cgra task <任务名> [key=value ...]
-  例：/cgra task run
-  例：/cgra task click x=0.5 y=0.5
-  例：/cgra task wait seconds=20
-  例：/cgra task tab_open url=https://example.com
-/cgra cv <Maa TemplateMatch 任务名>
-/cgra ocr <Maa OcrDetect 任务名>
-/cgra status [任务ID]
-/cgra cancel <任务ID>
+/wpr task <任务名> [key=value ...]
+  例：/wpr task run
+  例：/wpr task click x=0.5 y=0.5
+  例：/wpr task wait seconds=20
+  例：/wpr task tab_open url=https://example.com
+/wpr cv <Maa TemplateMatch 任务名>
+/wpr ocr <Maa OcrDetect 任务名>
+/wpr status [任务ID]
+/wpr cancel <任务ID>
 
 会话内常用任务：
 start                         启动默认明日方舟入口
