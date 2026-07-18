@@ -1,5 +1,16 @@
 # 更新日志
 
+## v0.4.1
+
+- 未进入 `/wpr start` 会话时，`/wpr task`、`/wpr cv`、`/wpr ocr` 和 `/wpr status` 改用 WPR HTTP 接口直接执行。
+- 进入 `/wpr start` 会话后，上述命令继续使用 WebSocket；`/wpr auto` 始终使用 WebSocket。
+
+## v0.4.0
+
+- 新增客户端任务链：一个 JSON 保存多个 WebSocket 任务，按顺序等待前一任务终态后再创建下一任务。
+- 新增 `create`、`update`、`chains`、`show`、`delete` 与 `auto` 命令，支持从 QQ 创建、查看和运行任务链。
+- 支持取消整条任务链，或按序号取消/跳过单个正在执行或尚未创建的节点；单项取消后会继续后续节点。
+
 ## v0.3.3
 
 - 适配 WPR 无参数快速 `start`：直接进入云游戏，不执行登录检测或等待游戏画面。

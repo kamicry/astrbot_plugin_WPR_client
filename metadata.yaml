@@ -2,7 +2,7 @@ name: astrbot_plugin_wpr_client
 display_name: WPR 云游戏控制
 desc: 通过 QQ 控制 WPR 任务，接收实时状态并取消任务。
 short_desc: QQ 控制 WPR 云游戏任务。
-version: v0.3.3
+version: v0.4.1
 author: kamicry
 repo: https://github.com/kamicry/astrbot_plugin_WPR_client
 astrbot_version: ">=4.16,<5"

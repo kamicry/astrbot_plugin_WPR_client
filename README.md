@@ -10,6 +10,7 @@
 - 每次提交立即回复任务 ID。
 - 查询 WPR 服务状态和单个任务状态，并返回当前截图。
 - 取消排队任务，或取消正在执行的可中断任务。
+- 在客户端保存 JSON 任务链，顺序创建多个 WebSocket 任务，支持整链或单节点取消。
 - 任务结束时主动发送状态、耗时和结束截图。
 - 连接失败后停止并显示原因；再次发送 `/wpr start` 可手动重试。
 - 可配置允许使用插件的 QQ 用户 ID。
@@ -37,6 +38,7 @@ ws://192.168.1.20:8765/ws
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `ws_url` | `ws://127.0.0.1:8765/ws` | WPR WebSocket 地址 |
+| `http_url` | 留空 | WPR HTTP 地址；留空时由 `ws_url` 自动推导为 `http://主机:端口/remote` |
 | `connect_timeout` | `10` | 连接和指令响应等待超时，单位秒 |
 | `notify_completion` | `true` | 任务进入终态时是否主动通知 QQ 会话 |
 | `capture_screenshot` | `true` | 请求任务终态和状态查询截图，并作为 QQ 图片发送 |
@@ -79,6 +81,8 @@ quit
 /wpr task center_click
 ```
 
+未执行 `/wpr start` 时，带 `/wpr` 前缀的单次 `task`、`cv`、`ocr` 和无参数 `status` 会直接请求 WPR HTTP 接口；无需建立 WebSocket。执行 `/wpr start` 后，同样的命令改为通过当前 WebSocket 会话提交，以获得任务 ID、实时状态和结束通知。`/wpr auto` 无论是否已有会话都始终使用 WebSocket。
+
 ### 直接提交自由参数任务
 
 参数格式为 `key=value`。数值和 `true` / `false` 会自动转换为 JSON 对应类型。
@@ -95,6 +99,40 @@ quit
 
 ```text
 /wpr task text text="hello world"
+```
+
+### 客户端任务链
+
+任务链保存在插件数据目录的 `chains/<名称>.json` 中。每个 JSON 文件包含多个 WPR WebSocket 任务；插件只会在前一任务收到完成、失败或取消终态后，才创建下一项任务。
+
+```text
+/wpr create run click&x=1&y=1 pipeline&pipeline_name=startup2
+/wpr show run
+/wpr auto run
+```
+
+上例会创建 `run.json`，其中第 1 项为 `click`，第 2 项为 `pipeline`。`/wpr auto run` 会先回复完整任务列表，随后逐项发送 WebSocket 任务创建消息；每项任务终态仍按普通任务发送完成、失败或取消消息与截图。
+
+可用命令：
+
+```text
+/wpr chains
+/wpr show run
+/wpr update run click&x=0.5&y=0.5 wait&seconds=3
+/wpr delete run
+
+/wpr auto run
+/wpr auto status run
+/wpr auto cancel run
+/wpr auto cancel run 2
+```
+
+`auto cancel run` 会取消当前 WebSocket 任务，并且不再创建后续任务。`auto cancel run 2` 会取消或跳过第 2 项；若该项正在执行，收到取消终态后会自动继续第 3 项；若尚未创建，则在执行到该项时直接跳过。任务失败时整条链会停止，避免在未知页面状态下继续操作。
+
+任务链节点使用 `任务名&key=value` 格式；支持 `cv:模板路径` 和 `ocr:目标文字` 作为节点开头。例如：
+
+```text
+/wpr create wakeup cv:WakeUp/StartToWakeUp.png&threshold=0.8 ocr:确认&timeout=20
 ```
 
 ### 浏览器标签页

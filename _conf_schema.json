@@ -5,6 +5,12 @@
     "default": "ws://127.0.0.1:8765/ws",
     "hint": "WPR 与 AstrBot 在同一台电脑时保持默认；远程部署时改为 ws://主机地址:端口/ws。"
   },
+  "http_url": {
+    "description": "WPR HTTP 地址",
+    "type": "string",
+    "default": "",
+    "hint": "留空时根据 ws_url 自动推导为 http://主机地址:端口/remote；仅用于未进入 /wpr start 会话的单次命令。"
+  },
   "connect_timeout": {
     "description": "连接与请求等待超时（秒）",
     "type": "int",
