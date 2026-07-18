@@ -24,7 +24,7 @@ TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
     "astrbot_plugin_wpr_client",
     "kamicry",
     "通过 QQ 控制 WPR 云游戏任务，并接收状态与取消结果。",
-    "v0.3.1",
+    "v0.3.2",
 )
 class WPRClientPlugin(Star):
     """维护一个到 WPR 的 WebSocket 连接，并把任务状态回传 QQ。"""
@@ -387,11 +387,12 @@ class WPRClientPlugin(Star):
                 })
                 yield event.plain_result(self._accepted_text(accepted))
             elif action in {"cv", "ocr"}:
-                if len(args) != 2:
-                    raise ValueError(f"用法：/wpr {action} <Maa任务名>")
+                if len(args) < 2:
+                    label = "模板路径" if action == "cv" else "目标文字"
+                    raise ValueError(f"用法：/wpr {action} <{label}> [key=value ...]")
                 accepted = await self._submit(event, {
                     "cvtask" if action == "cv" else "ocrtask": args[1],
-                    "params": {},
+                    "params": self._parse_params(args[2:]),
                 })
                 yield event.plain_result(self._accepted_text(accepted))
             elif action == "status":
@@ -451,11 +452,12 @@ class WPRClientPlugin(Star):
                 await self._send({"action": "cancel", "task_id": parts[1]})
                 yield event.plain_result(f"已发送取消请求：{parts[1]}")
             elif action in {"cv", "ocr"}:
-                if len(parts) != 2:
-                    raise ValueError(f"用法：{action} <Maa任务名>")
+                if len(parts) < 2:
+                    label = "模板路径" if action == "cv" else "目标文字"
+                    raise ValueError(f"用法：{action} <{label}> [key=value ...]")
                 accepted = await self._submit(event, {
                     "cvtask" if action == "cv" else "ocrtask": parts[1],
-                    "params": {},
+                    "params": self._parse_params(parts[2:]),
                 })
                 yield event.plain_result(self._accepted_text(accepted))
             else:
@@ -487,8 +489,8 @@ class WPRClientPlugin(Star):
   例：/wpr task click x=0.5 y=0.5
   例：/wpr task wait seconds=20
   例：/wpr task tab_open url=https://example.com
-/wpr cv <Maa TemplateMatch 任务名>
-/wpr ocr <Maa OcrDetect 任务名>
+ /wpr cv <模板路径> [key=value ...]
+ /wpr ocr <目标文字> [key=value ...]
 /wpr status [任务ID]
 /wpr cancel <任务ID>
 

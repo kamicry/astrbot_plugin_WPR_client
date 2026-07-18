@@ -1,5 +1,9 @@
 # 更新日志
 
+## v0.3.2
+
+- `/wpr cv` 改为接收模板图片路径，`/wpr ocr` 改为接收目标文字，并支持可选参数。
+
 ## v0.3.1
 
 - 更新插件仓库地址为 `kamicry/astrbot_plugin_WPR_client`。

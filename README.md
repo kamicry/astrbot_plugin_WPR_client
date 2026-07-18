@@ -108,11 +108,11 @@ quit
 
 进入控制会话后，也可以去掉 `/wpr task` 前缀直接发送同样的任务文本。
 
-### Maa 资源单任务
+### OpenCV 与 OCR 单任务
 
 ```text
-/wpr cv StartUp
-/wpr ocr GameStartUpdateOCR
+/wpr cv WakeUp/GameStart.png threshold=0.25
+/wpr ocr 确认 threshold=0.7
 ```
 
 ### 查询状态
