@@ -239,10 +239,10 @@ class CGRAClientPlugin(Star):
                 except Exception as exc:
                     logger.warning("Failed to fetch CGRA task status screenshot: %s", exc)
             screenshot = await self._save_screenshot(task_id, encoded_image)
-            chain = MessageChain().message(text)
+            components: list[Any] = [Comp.Plain(text=text)]
             if screenshot is not None:
-                chain = chain.file_image(str(screenshot))
-            await self.context.send_message(origin, chain)
+                components.append(Comp.Image.fromFileSystem(str(screenshot)))
+            await self.context.send_message(origin, MessageChain(components))
         except Exception as exc:
             logger.warning("Failed to notify CGRA task result to QQ: %s", exc)
 
@@ -377,7 +377,7 @@ class CGRAClientPlugin(Star):
             if action == "start":
                 await self._start_connection()
                 self.sessions[event.unified_msg_origin] = str(event.get_sender_id())
-                yield event.plain_result("CGRA 控制会话已启动并连接 WebSocket。\n直接发送任务名或命令，例如：run、click x=0.5 y=0.5、start game=mrfz。\n发送 quit 退出会话并断开连接。")
+                yield event.plain_result("CGRA 控制会话已启动并连接 WebSocket。\n直接发送任务名或命令，例如：run、click x=0.5 y=0.5、start。\n发送 help 查看命令，发送 quit 退出会话并断开连接。")
             elif action == "task":
                 if len(args) < 2:
                     raise ValueError("用法：/cgra task <任务名> [key=value ...]")
@@ -472,35 +472,33 @@ class CGRAClientPlugin(Star):
 
     @staticmethod
     def _accepted_text(accepted: dict[str, Any]) -> str:
-        flow = accepted.get("flow", [])
-        flow_text = "\n".join(
-            f"{index}. {step.get('description', step.get('type', '未知步骤'))}"
-            for index, step in enumerate(flow, 1)
-        ) or "服务端未提供流程"
-        task = accepted.get("task", {})
-        task_name = task.get("name", "未知任务") if isinstance(task, dict) else "未知任务"
-        task_kind = task.get("kind", "task") if isinstance(task, dict) else "task"
-        params = task.get("params", {}) if isinstance(task, dict) else {}
-        param_text = "，".join(f"{key}={value}" for key, value in params.items()) if params else "无"
-        return (
-            f"CGRA 任务已提交\n任务 ID：{accepted['task_id']}\n"
-            f"任务：{task_name}（{task_kind}）\n参数：{param_text}\n大致流程：\n{flow_text}\n"
-            f"可发送 status {accepted['task_id']} 查询，或 cancel {accepted['task_id']} 取消。"
-        )
+        return f"CGRA 任务已提交\n任务 ID：{accepted['task_id']}"
 
     @staticmethod
     def _help_text() -> str:
         return """CGRA 云游戏控制
 
+ /cgra help
+  显示本帮助。
  /cgra start
   建立 WebSocket 控制会话；会话中直接发送任务文本，quit 退出并断开。
 /cgra task <任务名> [key=value ...]
   例：/cgra task run
   例：/cgra task click x=0.5 y=0.5
   例：/cgra task wait seconds=20
+  例：/cgra task tab_open url=https://example.com
 /cgra cv <Maa TemplateMatch 任务名>
 /cgra ocr <Maa OcrDetect 任务名>
 /cgra status [任务ID]
 /cgra cancel <任务ID>
+
+会话内常用任务：
+start                         启动默认明日方舟入口
+shutdown                      强制关闭浏览器并重置状态
+tab_list                      列出标签页
+tab_new                       新建空白标签页
+tab_open url=https://...      新建并打开网页
+tab_switch tab_index=1        切换标签页
+tab_close tab_index=1         关闭标签页
 
 任务完成、失败或取消时会自动通知当前 QQ 会话，包含耗时和结束截图。"""
