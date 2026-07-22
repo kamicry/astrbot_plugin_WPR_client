@@ -45,5 +45,11 @@
     "type": "list",
     "default": ["start", "shutdown", "screenshot", "pipeline", "recruit_prepare", "recruit_refresh_once", "recruit_fill_normal", "recruit_verify", "shop_prepare", "shop_buy", "shop_verify", "friend_prepare", "friend_visit_all", "friend_verify", "startup_close_popups"],
     "hint": "只允许列表中的任务。留空表示不允许模型提交任何任务；如需开放 click、swipe 等直接操作，必须显式加入并确认风险。"
+  },
+  "llm_allowed_chains": {
+    "description": "允许大模型启动的预定义任务链",
+    "type": "list",
+    "default": [],
+    "hint": "填写 auto/ 下已审核的任务链名称。模型只能启动这些链，可安全封装 click、swipe、浏览器控制等低层动作；留空表示不允许模型启动任务链。"
   }
 }

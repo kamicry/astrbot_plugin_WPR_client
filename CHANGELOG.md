@@ -1,7 +1,8 @@
 # 更新日志
 
-## v0.4.3
+## v0.4.4
 
+- 新增 `wpr_run_chain` Tool；大模型只能运行 `llm_allowed_chains` 中已审核的预定义任务链，可安全封装点击与浏览器控制。
 - 新增 AstrBot Function Calling / Tools 接口：`wpr_get_status`、`wpr_execute_task` 与 `wpr_cancel_task`。
 - 大模型任务提交复用现有 WPR WebSocket、用户权限校验和 QQ 终态通知。
 - 新增 `llm_tool_enabled` 与 `llm_allowed_tasks`，默认只开放高阶游戏任务，不开放任意点击或浏览器操作。

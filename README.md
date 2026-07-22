@@ -45,6 +45,7 @@ ws://192.168.1.20:8765/ws
 | `allowed_users` | `[]` | 允许使用插件的 QQ 用户 ID 列表；留空不限制 |
 | `llm_tool_enabled` | `true` | 是否允许大模型调用 WPR Tool |
 | `llm_allowed_tasks` | 高阶任务列表 | 大模型可提交的 WPR 任务白名单；空列表禁止模型提交任务 |
+| `llm_allowed_chains` | `[]` | 大模型可启动的预定义任务链名称；空列表禁止模型启动任务链 |
 
 `allowed_users` 建议在实际控制游戏时配置为你的 QQ 号，避免群聊中的其他成员执行点击、启动或关闭命令。
 
@@ -56,11 +57,14 @@ ws://192.168.1.20:8765/ws
 | --- | --- |
 | `wpr_get_status` | 查询 WPR 服务、浏览器和视觉引擎状态 |
 | `wpr_execute_task` | 提交一个白名单内的 WPR 任务，参数使用 JSON 对象 |
+| `wpr_run_chain` | 启动一个白名单内的预定义任务链 |
 | `wpr_cancel_task` | 取消指定任务 ID |
 
 使用前需要在 AstrBot 的人格或会话工具设置中允许这些 Tool；人格的 `tools` 为空列表时，模型不会调用任何工具。官方开发说明见 [AstrBot 插件 AI 指南](https://github.com/AstrBotDevs/AstrBot/blob/master/docs/zh/dev/star/guides/ai.md)。
 
-默认白名单包含 WPR 启动、截图、Pipeline、公开招募、信用商店、好友基建和启动公告任务；不包含 `click`、`swipe`、`text`、浏览器标签页等任意直接操作。需要开放额外任务时，必须将准确任务名加入 `llm_allowed_tasks`，并同时配置 `allowed_users` 限制实际控制用户。
+默认任务白名单包含 WPR 启动、截图、Pipeline、公开招募、信用商店、好友基建和启动公告任务；不包含 `click`、`swipe`、`text`、浏览器标签页等任意直接操作。需要开放额外任务时，必须将准确任务名加入 `llm_allowed_tasks`，并同时配置 `allowed_users` 限制实际控制用户。
+
+包含点击或浏览器控制的自动化应保存为 `auto/<链名>.json`，再将该链名加入 `llm_allowed_chains`。模型只能运行预先审核的整条链，不能自行加入、修改或组合链内的低层操作。
 
 自然语言示例：
 
@@ -68,6 +72,7 @@ ws://192.168.1.20:8765/ws
 帮我检查 WPR 是否已经连接。
 进入信用商店，收取信用后购买加急许可、招聘许可和赤金。
 访问好友基建，直到没有下一位好友。
+运行每日浏览器签到任务链。
 取消刚才提交的任务。
 ```
 

@@ -53,7 +53,7 @@ class ClientTaskChain:
     "astrbot_plugin_wpr_client",
     "kamicry",
     "通过 QQ 控制 WPR 云游戏任务，并接收状态与取消结果。",
-    "v0.4.3",
+    "v0.4.4",
 )
 class WPRClientPlugin(Star):
     """维护一个到 WPR 的 WebSocket 连接，并把任务状态回传 QQ。"""
@@ -72,6 +72,11 @@ class WPRClientPlugin(Star):
         self.llm_allowed_tasks = {
             str(value).strip()
             for value in (self._config("llm_allowed_tasks", sorted(DEFAULT_LLM_ALLOWED_TASKS)) or [])
+            if str(value).strip()
+        }
+        self.llm_allowed_chains = {
+            str(value).strip()
+            for value in (self._config("llm_allowed_chains", []) or [])
             if str(value).strip()
         }
         self.sessions: dict[str, str] = {}
@@ -780,6 +785,33 @@ class WPRClientPlugin(Star):
         except Exception as exc:
             logger.warning("LLM task tool failed for %s: %s", normalized_name, exc)
             return f"提交 WPR 任务失败：{exc}"
+
+    @filter.llm_tool(name="wpr_run_chain")
+    async def llm_run_wpr_chain(self, event: AstrMessageEvent, chain_name: str) -> str:
+        """启动一个已授权的预定义 WPR 任务链。
+
+        Args:
+            chain_name(string): 已在 llm_allowed_chains 中启用的任务链名称。
+        """
+        error = self._llm_tool_error(event)
+        if error:
+            return error
+        if not isinstance(chain_name, str):
+            return "任务链名称必须是字符串。"
+        normalized_name = chain_name.strip()
+        if not normalized_name:
+            return "任务链名称不能为空。"
+        if normalized_name not in self.llm_allowed_chains:
+            return f"任务链不在 LLM 工具白名单中：{normalized_name}"
+        try:
+            run = await self._start_chain(event, normalized_name)
+            return (
+                f"已启动 WPR 任务链 {run.name}，共 {len(run.tasks)} 项。"
+                "任务链会按顺序执行，结束后插件会主动发送最终通知。"
+            )
+        except Exception as exc:
+            logger.warning("LLM chain tool failed for %s: %s", normalized_name, exc)
+            return f"启动 WPR 任务链失败：{exc}"
 
     @filter.llm_tool(name="wpr_cancel_task")
     async def llm_cancel_wpr_task(self, event: AstrMessageEvent, task_id: str) -> str:
