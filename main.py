@@ -25,6 +25,12 @@ from astrbot.api.star import Context, Star, register
 
 TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
 CHAIN_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+DEFAULT_LLM_ALLOWED_TASKS = frozenset({
+    "start", "shutdown", "screenshot", "pipeline",
+    "recruit_prepare", "recruit_refresh_once", "recruit_fill_normal", "recruit_verify",
+    "shop_prepare", "shop_buy", "shop_verify",
+    "friend_prepare", "friend_visit_all", "friend_verify", "startup_close_popups",
+})
 
 
 @dataclass
@@ -47,7 +53,7 @@ class ClientTaskChain:
     "astrbot_plugin_wpr_client",
     "kamicry",
     "通过 QQ 控制 WPR 云游戏任务，并接收状态与取消结果。",
-    "v0.4.2",
+    "v0.4.3",
 )
 class WPRClientPlugin(Star):
     """维护一个到 WPR 的 WebSocket 连接，并把任务状态回传 QQ。"""
@@ -62,6 +68,12 @@ class WPRClientPlugin(Star):
         self.notify_completion = bool(self._config("notify_completion", True))
         self.capture_screenshot = bool(self._config("capture_screenshot", True))
         self.allowed_users = {str(value) for value in (self._config("allowed_users", []) or []) if str(value)}
+        self.llm_tool_enabled = bool(self._config("llm_tool_enabled", True))
+        self.llm_allowed_tasks = {
+            str(value).strip()
+            for value in (self._config("llm_allowed_tasks", sorted(DEFAULT_LLM_ALLOWED_TASKS)) or [])
+            if str(value).strip()
+        }
         self.sessions: dict[str, str] = {}
         self.screenshot_dir = Path(get_astrbot_data_path()) / "plugin_data" / self.name / "screenshots"
         self.chain_dir = Path(__file__).resolve().parent / "auto"
@@ -714,6 +726,83 @@ class WPRClientPlugin(Star):
 
     def _is_allowed(self, event: AstrMessageEvent) -> bool:
         return not self.allowed_users or str(event.get_sender_id()) in self.allowed_users
+
+    def _llm_tool_error(self, event: AstrMessageEvent, task_name: str | None = None) -> str | None:
+        """Return a user-safe error before an LLM tool controls WPR."""
+        if not self.llm_tool_enabled:
+            return "WPR LLM 工具已被插件配置禁用。"
+        if not self._is_allowed(event):
+            return "当前用户没有使用 WPR 控制插件的权限。"
+        if task_name is not None and task_name not in self.llm_allowed_tasks:
+            return f"任务不在 LLM 工具白名单中：{task_name}"
+        return None
+
+    @filter.llm_tool(name="wpr_get_status")
+    async def llm_get_wpr_status(self, event: AstrMessageEvent) -> str:
+        """查询 WPR 云游戏服务和视觉引擎的当前状态。"""
+        error = self._llm_tool_error(event)
+        if error:
+            return error
+        try:
+            await self._start_connection()
+            status = await self._query_server()
+            return f"WPR 服务状态：{self._format_result(status.get('status'))}"
+        except Exception as exc:
+            logger.warning("LLM status tool failed: %s", exc)
+            return f"无法查询 WPR 状态：{exc}"
+
+    @filter.llm_tool(name="wpr_execute_task")
+    async def llm_execute_wpr_task(self, event: AstrMessageEvent, task_name: str, params: dict[str, Any] | None = None) -> str:
+        """提交一个已授权的 WPR 云游戏任务。
+
+        Args:
+            task_name(string): WPR 任务名称，例如 recruit_prepare、shop_buy 或 friend_visit_all。
+            params(object): 任务参数对象；没有参数时传空对象。
+        """
+        if not isinstance(task_name, str):
+            return "任务名称必须是字符串。"
+        normalized_name = task_name.strip()
+        error = self._llm_tool_error(event, normalized_name)
+        if error:
+            return error
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            return "任务参数必须是对象。"
+        try:
+            json.dumps(params, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            return f"任务参数无法编码为 JSON：{exc}"
+        try:
+            await self._start_connection()
+            accepted = await self._submit(event, {"task": normalized_name, "params": params})
+            return f"已提交 WPR 任务 {normalized_name}，任务 ID：{accepted['task_id']}。任务结束后插件会主动发送完成、失败或取消通知。"
+        except Exception as exc:
+            logger.warning("LLM task tool failed for %s: %s", normalized_name, exc)
+            return f"提交 WPR 任务失败：{exc}"
+
+    @filter.llm_tool(name="wpr_cancel_task")
+    async def llm_cancel_wpr_task(self, event: AstrMessageEvent, task_id: str) -> str:
+        """取消一个正在运行的 WPR 任务。
+
+        Args:
+            task_id(string): 要取消的 WPR 任务 ID。
+        """
+        error = self._llm_tool_error(event)
+        if error:
+            return error
+        if not isinstance(task_id, str):
+            return "任务 ID 必须是字符串。"
+        normalized_task_id = task_id.strip()
+        if not normalized_task_id:
+            return "任务 ID 不能为空。"
+        try:
+            await self._start_connection()
+            await self._send({"action": "cancel", "task_id": normalized_task_id})
+            return f"已发送取消请求：{normalized_task_id}"
+        except Exception as exc:
+            logger.warning("LLM cancel tool failed for %s: %s", normalized_task_id, exc)
+            return f"取消 WPR 任务失败：{exc}"
 
     @staticmethod
     def _parse_params(parts: list[str]) -> dict[str, Any]:
