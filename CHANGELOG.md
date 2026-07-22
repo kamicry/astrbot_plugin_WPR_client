@@ -1,5 +1,11 @@
 # 更新日志
 
+## v0.4.5
+
+- 新增 `wpr_get_task_status` 与 `wpr_wait_task_result` Tool，使大模型可读取单任务状态或等待终态后继续决策。
+- `wpr_wait_task_result` 单次最长等待 30 秒，超时后返回当前状态并提示模型查询或再次等待。
+- README 补充任务链白名单配置，以及确定性任务链与模型自主决策的使用边界。
+
 ## v0.4.4
 
 - 新增 `wpr_run_chain` Tool；大模型只能运行 `llm_allowed_chains` 中已审核的预定义任务链，可安全封装点击与浏览器控制。
