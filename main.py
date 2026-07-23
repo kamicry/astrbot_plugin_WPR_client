@@ -16,15 +16,35 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 import websockets
-from astrbot.api import AstrBotConfig, logger
-import astrbot.api.message_components as Comp
-from astrbot.api.event import AstrMessageEvent, MessageChain, filter
-from astrbot.core.utils.astrbot_path import get_astrbot_data_path
-from astrbot.api.star import Context, Star, register
 
+import astrbot.api.message_components as Comp
+from astrbot.api import AstrBotConfig, logger
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
+from astrbot.api.star import Context, Star, register
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
 CHAIN_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+MAX_LLM_TASK_WAIT_SECONDS = 30
+DEFAULT_LLM_ALLOWED_TASKS = frozenset(
+    {
+        "start",
+        "shutdown",
+        "screenshot",
+        "pipeline",
+        "recruit_prepare",
+        "recruit_refresh_once",
+        "recruit_fill_normal",
+        "recruit_verify",
+        "shop_prepare",
+        "shop_buy",
+        "shop_verify",
+        "friend_prepare",
+        "friend_visit_all",
+        "friend_verify",
+        "startup_close_popups",
+    }
+)
 
 
 @dataclass
@@ -47,7 +67,7 @@ class ClientTaskChain:
     "astrbot_plugin_wpr_client",
     "kamicry",
     "通过 QQ 控制 WPR 云游戏任务，并接收状态与取消结果。",
-    "v0.4.2",
+    "v0.4.5",
 )
 class WPRClientPlugin(Star):
     """维护一个到 WPR 的 WebSocket 连接，并把任务状态回传 QQ。"""
@@ -61,9 +81,29 @@ class WPRClientPlugin(Star):
         self.connect_timeout = float(self._config("connect_timeout", 10))
         self.notify_completion = bool(self._config("notify_completion", True))
         self.capture_screenshot = bool(self._config("capture_screenshot", True))
-        self.allowed_users = {str(value) for value in (self._config("allowed_users", []) or []) if str(value)}
+        self.allowed_users = {
+            str(value)
+            for value in (self._config("allowed_users", []) or [])
+            if str(value)
+        }
+        self.llm_tool_enabled = bool(self._config("llm_tool_enabled", True))
+        self.llm_allowed_tasks = {
+            str(value).strip()
+            for value in (
+                self._config("llm_allowed_tasks", sorted(DEFAULT_LLM_ALLOWED_TASKS))
+                or []
+            )
+            if str(value).strip()
+        }
+        self.llm_allowed_chains = {
+            str(value).strip()
+            for value in (self._config("llm_allowed_chains", []) or [])
+            if str(value).strip()
+        }
         self.sessions: dict[str, str] = {}
-        self.screenshot_dir = Path(get_astrbot_data_path()) / "plugin_data" / self.name / "screenshots"
+        self.screenshot_dir = (
+            Path(get_astrbot_data_path()) / "plugin_data" / self.name / "screenshots"
+        )
         self.chain_dir = Path(__file__).resolve().parent / "auto"
 
         self._ws: Any = None
@@ -85,7 +125,9 @@ class WPRClientPlugin(Star):
     async def initialize(self):
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
         self.chain_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("WPR client plugin initialized; use /wpr start to connect: %s", self.ws_url)
+        logger.info(
+            "WPR client plugin initialized; use /wpr start to connect: %s", self.ws_url
+        )
 
     async def terminate(self):
         await self._stop_all_chains()
@@ -183,7 +225,9 @@ class WPRClientPlugin(Star):
             return
         if event != "task_status":
             if event == "error":
-                logger.warning("WPR WebSocket error: %s", message.get("error", "unknown error"))
+                logger.warning(
+                    "WPR WebSocket error: %s", message.get("error", "unknown error")
+                )
             return
 
         task_id = str(message.get("task_id", ""))
@@ -210,8 +254,14 @@ class WPRClientPlugin(Star):
         try:
             await asyncio.wait_for(self._connected.wait(), timeout=self.connect_timeout)
         except asyncio.TimeoutError as exc:
-            detail = f"：{self._last_connection_error}" if self._last_connection_error else ""
-            raise RuntimeError(f"无法连接 WPR WebSocket：{self.ws_url}{detail}") from exc
+            detail = (
+                f"：{self._last_connection_error}"
+                if self._last_connection_error
+                else ""
+            )
+            raise RuntimeError(
+                f"无法连接 WPR WebSocket：{self.ws_url}{detail}"
+            ) from exc
 
     async def _send(self, message: dict[str, Any]):
         await self._wait_for_connection()
@@ -229,13 +279,20 @@ class WPRClientPlugin(Star):
         return str(value)
 
     async def _http_remote(self, query: dict[str, Any]) -> dict[str, Any]:
-        params = {key: self._http_param_value(value) for key, value in query.items() if value is not None}
+        params = {
+            key: self._http_param_value(value)
+            for key, value in query.items()
+            if value is not None
+        }
         separator = "&" if "?" in self.http_url else "?"
         url = f"{self.http_url}{separator}{urlencode(params)}"
 
         def request() -> dict[str, Any]:
             try:
-                with urlopen(Request(url, headers={"Accept": "application/json, image/png"}), timeout=150) as response:
+                with urlopen(
+                    Request(url, headers={"Accept": "application/json, image/png"}),
+                    timeout=150,
+                ) as response:
                     body = response.read()
                     content_type = response.headers.get_content_type()
             except HTTPError as exc:
@@ -255,41 +312,59 @@ class WPRClientPlugin(Star):
 
         return await asyncio.to_thread(request)
 
-    async def _http_task_response(self, event: AstrMessageEvent, title: str, query: dict[str, Any]):
+    async def _http_task_response(
+        self, event: AstrMessageEvent, title: str, query: dict[str, Any]
+    ):
         result = await self._http_remote(query)
         image = result.get("image_bytes")
         if isinstance(image, bytes):
             path = self.screenshot_dir / f"http-{int(time.time() * 1000)}.png"
             await asyncio.to_thread(path.write_bytes, image)
-            return event.chain_result([
-                Comp.Plain(text=f"WPR HTTP 任务完成：{title}"),
-                Comp.Image.fromFileSystem(str(path)),
-            ])
+            return event.chain_result(
+                [
+                    Comp.Plain(text=f"WPR HTTP 任务完成：{title}"),
+                    Comp.Image.fromFileSystem(str(path)),
+                ]
+            )
         if result.get("success") is False or result.get("error"):
             raise RuntimeError(str(result.get("error", "WPR HTTP 任务失败")))
-        return event.plain_result(f"WPR HTTP 任务完成：{title}\n{self._format_result(result)}")
+        return event.plain_result(
+            f"WPR HTTP 任务完成：{title}\n{self._format_result(result)}"
+        )
 
-    async def _submit(self, event: AstrMessageEvent, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _submit(
+        self, event: AstrMessageEvent, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         return await self._submit_for_origin(event.unified_msg_origin, payload)
 
-    async def _submit_for_origin(self, origin: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _submit_for_origin(
+        self, origin: Any, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         async with self._submit_lock:
             loop = asyncio.get_running_loop()
             accepted_waiter: asyncio.Future[dict[str, Any]] = loop.create_future()
             self._accepted_waiter = accepted_waiter
             try:
-                await self._send({
-                    "action": "submit",
-                    "capture_screenshot": self.capture_screenshot,
-                    **payload,
-                })
-                accepted = await asyncio.wait_for(accepted_waiter, timeout=self.connect_timeout)
+                await self._send(
+                    {
+                        "action": "submit",
+                        "capture_screenshot": self.capture_screenshot,
+                        **payload,
+                    }
+                )
+                accepted = await asyncio.wait_for(
+                    accepted_waiter, timeout=self.connect_timeout
+                )
             finally:
                 self._accepted_waiter = None
         task_id = str(accepted["task_id"])
         self._task_origins[task_id] = origin
         cached = self._task_states.get(task_id)
-        if cached is not None and cached.get("status") in TERMINAL_STATES and self.notify_completion:
+        if (
+            cached is not None
+            and cached.get("status") in TERMINAL_STATES
+            and self.notify_completion
+        ):
             asyncio.create_task(self._notify_task_terminal(origin, cached))
         return accepted
 
@@ -301,7 +376,11 @@ class WPRClientPlugin(Star):
         waiter: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._terminal_waiters[task_id] = waiter
         cached = self._task_states.get(task_id)
-        if cached is not None and cached.get("status") in TERMINAL_STATES and not waiter.done():
+        if (
+            cached is not None
+            and cached.get("status") in TERMINAL_STATES
+            and not waiter.done()
+        ):
             waiter.set_result(cached)
         try:
             return await waiter
@@ -346,7 +425,9 @@ class WPRClientPlugin(Star):
                     latest = await self._query_task(task_id)
                     encoded_image = self._extract_screenshot(latest)
                 except Exception as exc:
-                    logger.warning("Failed to fetch WPR task status screenshot: %s", exc)
+                    logger.warning(
+                        "Failed to fetch WPR task status screenshot: %s", exc
+                    )
             screenshot = await self._save_screenshot(task_id, encoded_image)
             components: list[Any] = [Comp.Plain(text=text)]
             if screenshot is not None:
@@ -374,9 +455,15 @@ class WPRClientPlugin(Star):
         except (TypeError, ValueError):
             return "未知"
 
-    async def _task_status_response(self, event: AstrMessageEvent, task: dict[str, Any]):
+    async def _task_status_response(
+        self, event: AstrMessageEvent, task: dict[str, Any]
+    ):
         task_info = task.get("task", {})
-        task_name = task_info.get("name", "未知任务") if isinstance(task_info, dict) else "未知任务"
+        task_name = (
+            task_info.get("name", "未知任务")
+            if isinstance(task_info, dict)
+            else "未知任务"
+        )
         text = (
             f"WPR 任务状态\n任务：{task_name}\n"
             f"状态：{task.get('status', '未知')}\n"
@@ -384,13 +471,17 @@ class WPRClientPlugin(Star):
             f"{self._format_task_result(task)}"
         )
         task_id = str(task.get("task_id", "status"))
-        screenshot = await self._save_screenshot(f"status-{task_id}", self._extract_screenshot(task))
+        screenshot = await self._save_screenshot(
+            f"status-{task_id}", self._extract_screenshot(task)
+        )
         if screenshot is None:
             return event.plain_result(text)
-        return event.chain_result([
-            Comp.Plain(text=text),
-            Comp.Image.fromFileSystem(str(screenshot)),
-        ])
+        return event.chain_result(
+            [
+                Comp.Plain(text=text),
+                Comp.Image.fromFileSystem(str(screenshot)),
+            ]
+        )
 
     @staticmethod
     def _extract_screenshot(message: dict[str, Any]) -> str | None:
@@ -433,7 +524,9 @@ class WPRClientPlugin(Star):
             return "截图已获取"
         if isinstance(nested, dict):
             keys = ", ".join(str(key) for key in nested if key != "image_base64")
-            return f"任务类型：{task_type or '未知'}" + (f"，结果字段：{keys}" if keys else "")
+            return f"任务类型：{task_type or '未知'}" + (
+                f"，结果字段：{keys}" if keys else ""
+            )
         return f"任务类型：{task_type or '未知'}"
 
     def _format_task_result(self, message: dict[str, Any]) -> str:
@@ -446,16 +539,24 @@ class WPRClientPlugin(Star):
     # ------------------------------------------------------------------
     def _chain_path(self, name: str) -> Path:
         if not CHAIN_NAME_PATTERN.fullmatch(name):
-            raise ValueError("任务链名称只能包含字母、数字、下划线和连字符，长度不超过 64")
+            raise ValueError(
+                "任务链名称只能包含字母、数字、下划线和连字符，长度不超过 64"
+            )
         return self.chain_dir / f"{name}.json"
 
     @staticmethod
     def _validate_chain_task(payload: Any) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("任务链中的每一项必须是对象")
-        kinds = [key for key in ("task", "cvtask", "ocrtask") if isinstance(payload.get(key), str) and payload[key]]
+        kinds = [
+            key
+            for key in ("task", "cvtask", "ocrtask")
+            if isinstance(payload.get(key), str) and payload[key]
+        ]
         if len(kinds) != 1:
-            raise ValueError("每个任务链节点必须且只能包含 task、cvtask 或 ocrtask 之一")
+            raise ValueError(
+                "每个任务链节点必须且只能包含 task、cvtask 或 ocrtask 之一"
+            )
         params = payload.get("params", {})
         if not isinstance(params, dict):
             raise ValueError("任务链节点的 params 必须是对象")
@@ -501,7 +602,9 @@ class WPRClientPlugin(Star):
                 payload = {"ocrtask": task_spec[4:]}
             else:
                 payload = {"task": task_spec}
-            payload["params"] = self._parse_params([segment for segment in segments[1:] if segment])
+            payload["params"] = self._parse_params(
+                [segment for segment in segments[1:] if segment]
+            )
             tasks.append(self._validate_chain_task(payload))
         return tasks
 
@@ -512,23 +615,31 @@ class WPRClientPlugin(Star):
                 return f"{key}={payload[key]}"
         return "未知任务"
 
-    def _format_chain_tasks(self, tasks: list[dict[str, Any]], run: ClientTaskChain | None = None) -> str:
+    def _format_chain_tasks(
+        self, tasks: list[dict[str, Any]], run: ClientTaskChain | None = None
+    ) -> str:
         lines: list[str] = []
         for index, payload in enumerate(tasks):
             state = "待执行"
             task_id = ""
             if run is not None:
-                state = run.task_states.get(index, "已跳过" if index in run.skipped else "待执行")
+                state = run.task_states.get(
+                    index, "已跳过" if index in run.skipped else "待执行"
+                )
                 if index in run.task_ids:
                     task_id = f"（{run.task_ids[index]}）"
             params = payload.get("params", {})
             suffix = f" {params}" if params else ""
-            lines.append(f"{index + 1}. [{state}] {self._chain_task_name(payload)}{suffix}{task_id}")
+            lines.append(
+                f"{index + 1}. [{state}] {self._chain_task_name(payload)}{suffix}{task_id}"
+            )
         return "\n".join(lines)
 
     async def _send_chain_message(self, origin: Any, text: str) -> None:
         try:
-            await self.context.send_message(origin, MessageChain([Comp.Plain(text=text)]))
+            await self.context.send_message(
+                origin, MessageChain([Comp.Plain(text=text)])
+            )
         except Exception as exc:
             logger.warning("Failed to send WPR chain message: %s", exc)
 
@@ -537,11 +648,19 @@ class WPRClientPlugin(Star):
         tasks = self._load_chain(name)
         async with self._chain_lock:
             existing = self._chains.get(name)
-            if existing is not None and existing.runner is not None and not existing.runner.done():
+            if (
+                existing is not None
+                and existing.runner is not None
+                and not existing.runner.done()
+            ):
                 raise ValueError(f"任务链正在执行：{name}")
-            run = ClientTaskChain(name=name, tasks=tasks, origin=event.unified_msg_origin)
+            run = ClientTaskChain(
+                name=name, tasks=tasks, origin=event.unified_msg_origin
+            )
             self._chains[name] = run
-            run.runner = asyncio.create_task(self._run_chain(run), name=f"wpr-chain-{name}")
+            run.runner = asyncio.create_task(
+                self._run_chain(run), name=f"wpr-chain-{name}"
+            )
             return run
 
     async def _run_chain(self, run: ClientTaskChain) -> None:
@@ -558,7 +677,10 @@ class WPRClientPlugin(Star):
                 except Exception as exc:
                     run.task_states[index] = "创建失败"
                     run.status = "failed"
-                    await self._send_chain_message(run.origin, f"WPR 任务链 {run.name} 创建第 {index + 1} 项失败：{exc}")
+                    await self._send_chain_message(
+                        run.origin,
+                        f"WPR 任务链 {run.name} 创建第 {index + 1} 项失败：{exc}",
+                    )
                     return
                 task_id = str(accepted["task_id"])
                 run.task_ids[index] = task_id
@@ -605,7 +727,9 @@ class WPRClientPlugin(Star):
             run.stop_requested = True
             run.status = "cancelling"
             if run.current_index is not None and run.current_index in run.task_ids:
-                await self._send({"action": "cancel", "task_id": run.task_ids[run.current_index]})
+                await self._send(
+                    {"action": "cancel", "task_id": run.task_ids[run.current_index]}
+                )
             return f"已取消任务链 {name}；当前任务结束后不会创建下一项。"
 
         task_index = index - 1
@@ -622,21 +746,36 @@ class WPRClientPlugin(Star):
         return f"已跳过任务链 {name} 的第 {index} 项；执行到该项时会直接继续下一项。"
 
     async def _stop_all_chains(self) -> None:
-        active = [run for run in self._chains.values() if run.runner is not None and not run.runner.done()]
+        active = [
+            run
+            for run in self._chains.values()
+            if run.runner is not None and not run.runner.done()
+        ]
         for run in active:
             run.stop_requested = True
-            if run.current_index is not None and run.current_index in run.task_ids and self._connected.is_set():
+            if (
+                run.current_index is not None
+                and run.current_index in run.task_ids
+                and self._connected.is_set()
+            ):
                 try:
-                    await self._send({"action": "cancel", "task_id": run.task_ids[run.current_index]})
+                    await self._send(
+                        {"action": "cancel", "task_id": run.task_ids[run.current_index]}
+                    )
                 except Exception:
                     pass
         for run in active:
             if run.runner is not None:
                 run.runner.cancel()
         if active:
-            await asyncio.gather(*(run.runner for run in active if run.runner is not None), return_exceptions=True)
+            await asyncio.gather(
+                *(run.runner for run in active if run.runner is not None),
+                return_exceptions=True,
+            )
 
-    async def _handle_chain_command(self, event: AstrMessageEvent, args: list[str]) -> str | None:
+    async def _handle_chain_command(
+        self, event: AstrMessageEvent, args: list[str]
+    ) -> str | None:
         if not args:
             return None
         action = args[0].lower()
@@ -645,7 +784,11 @@ class WPRClientPlugin(Star):
                 raise ValueError(f"用法：wpr {action} <任务链名> <任务> [任务 ...]")
             name = args[1]
             active = self._chains.get(name)
-            if active is not None and active.runner is not None and not active.runner.done():
+            if (
+                active is not None
+                and active.runner is not None
+                and not active.runner.done()
+            ):
                 raise ValueError(f"任务链正在执行，不能{action}：{name}")
             if action == "create" and self._chain_path(name).exists():
                 raise ValueError(f"任务链已存在：{name}，请使用 wpr update {name} ...")
@@ -692,7 +835,9 @@ class WPRClientPlugin(Star):
         if action != "auto":
             return None
         if len(args) < 2:
-            raise ValueError("用法：wpr auto <任务链名>，或 wpr auto cancel <任务链名> [任务序号]")
+            raise ValueError(
+                "用法：wpr auto <任务链名>，或 wpr auto cancel <任务链名> [任务序号]"
+            )
         sub_action = args[1].lower()
         if sub_action == "cancel":
             if len(args) not in {3, 4}:
@@ -705,15 +850,224 @@ class WPRClientPlugin(Star):
             run = self._chains.get(args[2])
             if run is None:
                 tasks = self._load_chain(args[2])
-                return f"WPR 任务链 {args[2]} 尚未运行\n{self._format_chain_tasks(tasks)}"
+                return (
+                    f"WPR 任务链 {args[2]} 尚未运行\n{self._format_chain_tasks(tasks)}"
+                )
             return f"WPR 任务链 {run.name} 状态：{run.status}\n{self._format_chain_tasks(run.tasks, run)}"
         if len(args) != 2:
             raise ValueError("用法：wpr auto <任务链名>")
         run = await self._start_chain(event, args[1])
-        return f"WPR 任务链已启动：{run.name}\n{self._format_chain_tasks(run.tasks, run)}"
+        return (
+            f"WPR 任务链已启动：{run.name}\n{self._format_chain_tasks(run.tasks, run)}"
+        )
 
     def _is_allowed(self, event: AstrMessageEvent) -> bool:
-        return not self.allowed_users or str(event.get_sender_id()) in self.allowed_users
+        return (
+            not self.allowed_users or str(event.get_sender_id()) in self.allowed_users
+        )
+
+    def _llm_tool_error(
+        self, event: AstrMessageEvent, task_name: str | None = None
+    ) -> str | None:
+        """Return a user-safe error before an LLM tool controls WPR."""
+        if not self.llm_tool_enabled:
+            return "WPR LLM 工具已被插件配置禁用。"
+        if not self._is_allowed(event):
+            return "当前用户没有使用 WPR 控制插件的权限。"
+        if task_name is not None and task_name not in self.llm_allowed_tasks:
+            return f"任务不在 LLM 工具白名单中：{task_name}"
+        return None
+
+    def _format_llm_task_state(self, task_id: str, task: dict[str, Any]) -> str:
+        status = task.get("status", "unknown")
+        return (
+            f"WPR 任务状态\n任务 ID：{task_id}\n状态：{status}\n"
+            f"{self._format_task_result(task)}"
+        )
+
+    @staticmethod
+    def _llm_wait_seconds(timeout_seconds: Any) -> int | None:
+        if isinstance(timeout_seconds, bool) or not isinstance(
+            timeout_seconds,
+            (int, float),
+        ):
+            return None
+        if not float(timeout_seconds).is_integer():
+            return None
+        seconds = int(timeout_seconds)
+        if not 1 <= seconds <= MAX_LLM_TASK_WAIT_SECONDS:
+            return None
+        return seconds
+
+    @filter.llm_tool(name="wpr_get_status")
+    async def llm_get_wpr_status(self, event: AstrMessageEvent) -> str:
+        """查询 WPR 云游戏服务和视觉引擎的当前状态。"""
+        error = self._llm_tool_error(event)
+        if error:
+            return error
+        try:
+            await self._start_connection()
+            status = await self._query_server()
+            return f"WPR 服务状态：{self._format_result(status.get('status'))}"
+        except Exception as exc:
+            logger.warning("LLM status tool failed: %s", exc)
+            return f"无法查询 WPR 状态：{exc}"
+
+    @filter.llm_tool(name="wpr_execute_task")
+    async def llm_execute_wpr_task(
+        self,
+        event: AstrMessageEvent,
+        task_name: str,
+        params: dict[str, Any] | None = None,
+    ) -> str:
+        """提交一个已授权的 WPR 云游戏任务。
+
+        Args:
+            task_name(string): WPR 任务名称，例如 recruit_prepare、shop_buy 或 friend_visit_all。
+            params(object): 任务参数对象；没有参数时传空对象。
+        """
+        if not isinstance(task_name, str):
+            return "任务名称必须是字符串。"
+        normalized_name = task_name.strip()
+        error = self._llm_tool_error(event, normalized_name)
+        if error:
+            return error
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            return "任务参数必须是对象。"
+        try:
+            json.dumps(params, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            return f"任务参数无法编码为 JSON：{exc}"
+        try:
+            await self._start_connection()
+            accepted = await self._submit(
+                event, {"task": normalized_name, "params": params}
+            )
+            return (
+                f"已提交 WPR 任务 {normalized_name}，任务 ID：{accepted['task_id']}。"
+                "请调用 wpr_wait_task_result 等待终态后再决定下一步。"
+            )
+        except Exception as exc:
+            logger.warning("LLM task tool failed for %s: %s", normalized_name, exc)
+            return f"提交 WPR 任务失败：{exc}"
+
+    @filter.llm_tool(name="wpr_get_task_status")
+    async def llm_get_wpr_task_status(
+        self, event: AstrMessageEvent, task_id: str
+    ) -> str:
+        """查询指定 WPR 任务的当前状态和已知结果。"""
+        error = self._llm_tool_error(event)
+        if error:
+            return error
+        if not isinstance(task_id, str) or not (normalized_task_id := task_id.strip()):
+            return "任务 ID 必须是非空字符串。"
+        try:
+            await self._start_connection()
+            task = await self._query_task(normalized_task_id)
+            return self._format_llm_task_state(normalized_task_id, task)
+        except Exception as exc:
+            logger.warning(
+                "LLM task status tool failed for %s: %s", normalized_task_id, exc
+            )
+            return f"无法查询 WPR 任务状态：{exc}"
+
+    @filter.llm_tool(name="wpr_wait_task_result")
+    async def llm_wait_wpr_task_result(
+        self,
+        event: AstrMessageEvent,
+        task_id: str,
+        timeout_seconds: float = 30,
+    ) -> str:
+        """等待 WPR 任务终态，并将完成、失败或取消结果返回给模型。
+
+        Args:
+            task_id(string): `wpr_execute_task` 返回的任务 ID。
+            timeout_seconds(number): 等待秒数，范围 1 到 30，默认 30；只接受整数秒。
+        """
+        error = self._llm_tool_error(event)
+        if error:
+            return error
+        if not isinstance(task_id, str) or not (normalized_task_id := task_id.strip()):
+            return "任务 ID 必须是非空字符串。"
+        wait_seconds = self._llm_wait_seconds(timeout_seconds)
+        if wait_seconds is None:
+            return f"等待秒数必须是 1 到 {MAX_LLM_TASK_WAIT_SECONDS} 的整数。"
+        try:
+            await self._start_connection()
+            task = await asyncio.wait_for(
+                self._wait_task_terminal(normalized_task_id),
+                timeout=wait_seconds,
+            )
+            return "WPR 任务已进入终态。\n" + self._format_llm_task_state(
+                normalized_task_id,
+                task,
+            )
+        except asyncio.TimeoutError:
+            current = self._task_states.get(normalized_task_id)
+            status = (
+                current.get("status", "unknown") if current is not None else "unknown"
+            )
+            return (
+                f"等待 {wait_seconds} 秒后任务仍未结束，当前状态：{status}。"
+                "请调用 wpr_get_task_status 查询，或再次调用 wpr_wait_task_result 等待。"
+            )
+        except Exception as exc:
+            logger.warning(
+                "LLM task wait tool failed for %s: %s", normalized_task_id, exc
+            )
+            return f"等待 WPR 任务结果失败：{exc}"
+
+    @filter.llm_tool(name="wpr_run_chain")
+    async def llm_run_wpr_chain(self, event: AstrMessageEvent, chain_name: str) -> str:
+        """启动一个已授权的预定义 WPR 任务链。
+
+        Args:
+            chain_name(string): 已在 llm_allowed_chains 中启用的任务链名称。
+        """
+        error = self._llm_tool_error(event)
+        if error:
+            return error
+        if not isinstance(chain_name, str):
+            return "任务链名称必须是字符串。"
+        normalized_name = chain_name.strip()
+        if not normalized_name:
+            return "任务链名称不能为空。"
+        if normalized_name not in self.llm_allowed_chains:
+            return f"任务链不在 LLM 工具白名单中：{normalized_name}"
+        try:
+            run = await self._start_chain(event, normalized_name)
+            return (
+                f"已启动 WPR 任务链 {run.name}，共 {len(run.tasks)} 项。"
+                "任务链会按顺序执行，结束后插件会主动发送最终通知。"
+            )
+        except Exception as exc:
+            logger.warning("LLM chain tool failed for %s: %s", normalized_name, exc)
+            return f"启动 WPR 任务链失败：{exc}"
+
+    @filter.llm_tool(name="wpr_cancel_task")
+    async def llm_cancel_wpr_task(self, event: AstrMessageEvent, task_id: str) -> str:
+        """取消一个正在运行的 WPR 任务。
+
+        Args:
+            task_id(string): 要取消的 WPR 任务 ID。
+        """
+        error = self._llm_tool_error(event)
+        if error:
+            return error
+        if not isinstance(task_id, str):
+            return "任务 ID 必须是字符串。"
+        normalized_task_id = task_id.strip()
+        if not normalized_task_id:
+            return "任务 ID 不能为空。"
+        try:
+            await self._start_connection()
+            await self._send({"action": "cancel", "task_id": normalized_task_id})
+            return f"已发送取消请求：{normalized_task_id}"
+        except Exception as exc:
+            logger.warning("LLM cancel tool failed for %s: %s", normalized_task_id, exc)
+            return f"取消 WPR 任务失败：{exc}"
 
     @staticmethod
     def _parse_params(parts: list[str]) -> dict[str, Any]:
@@ -743,7 +1097,7 @@ class WPRClientPlugin(Star):
         text = event.message_str.strip()
         for prefix in ("/wpr", "wpr"):
             if text.lower().startswith(prefix):
-                text = text[len(prefix):].strip()
+                text = text[len(prefix) :].strip()
                 break
         return shlex.split(text) if text else []
 
@@ -772,16 +1126,22 @@ class WPRClientPlugin(Star):
             elif action == "start":
                 await self._start_connection()
                 self.sessions[event.unified_msg_origin] = str(event.get_sender_id())
-                yield event.plain_result("WPR 控制会话已启动并连接 WebSocket。\n直接发送任务名或命令，例如：run、click x=0.5 y=0.5、start。\n发送 help 查看命令，发送 quit 退出会话并断开连接。")
+                yield event.plain_result(
+                    "WPR 控制会话已启动并连接 WebSocket。\n直接发送任务名或命令，例如：run、click x=0.5 y=0.5、start。\n发送 help 查看命令，发送 quit 退出会话并断开连接。"
+                )
             elif action == "task":
                 if len(args) < 2:
                     raise ValueError("用法：/wpr task <任务名> [key=value ...]")
                 params = self._parse_params(args[2:])
                 if websocket_session:
-                    accepted = await self._submit(event, {"task": args[1], "params": params})
+                    accepted = await self._submit(
+                        event, {"task": args[1], "params": params}
+                    )
                     yield event.plain_result(self._accepted_text(accepted))
                 else:
-                    yield await self._http_task_response(event, args[1], {"task": args[1], **params})
+                    yield await self._http_task_response(
+                        event, args[1], {"task": args[1], **params}
+                    )
             elif action in {"cv", "ocr"}:
                 if len(args) < 2:
                     label = "模板路径" if action == "cv" else "目标文字"
@@ -789,20 +1149,30 @@ class WPRClientPlugin(Star):
                 key = "cvtask" if action == "cv" else "ocrtask"
                 params = self._parse_params(args[2:])
                 if websocket_session:
-                    accepted = await self._submit(event, {key: args[1], "params": params})
+                    accepted = await self._submit(
+                        event, {key: args[1], "params": params}
+                    )
                     yield event.plain_result(self._accepted_text(accepted))
                 else:
-                    yield await self._http_task_response(event, f"{action} {args[1]}", {key: args[1], **params})
+                    yield await self._http_task_response(
+                        event, f"{action} {args[1]}", {key: args[1], **params}
+                    )
             elif action == "status":
                 if len(args) == 1:
                     if websocket_session:
                         server = await self._query_server()
-                        yield event.plain_result(f"WPR 服务状态\n{self._format_result(server.get('status'))}")
+                        yield event.plain_result(
+                            f"WPR 服务状态\n{self._format_result(server.get('status'))}"
+                        )
                     else:
                         server = await self._http_remote({"task": "status"})
                         if server.get("success") is False or server.get("error"):
-                            raise RuntimeError(str(server.get("error", "WPR HTTP 状态查询失败")))
-                        yield event.plain_result(f"WPR 服务状态\n{self._format_result(server)}")
+                            raise RuntimeError(
+                                str(server.get("error", "WPR HTTP 状态查询失败"))
+                            )
+                        yield event.plain_result(
+                            f"WPR 服务状态\n{self._format_result(server)}"
+                        )
                 else:
                     task = await self._query_task(args[1])
                     yield await self._task_status_response(event, task)
@@ -851,7 +1221,9 @@ class WPRClientPlugin(Star):
             elif action == "status":
                 if len(parts) == 1:
                     server = await self._query_server()
-                    yield event.plain_result(f"WPR 服务状态\n{self._format_result(server.get('status'))}")
+                    yield event.plain_result(
+                        f"WPR 服务状态\n{self._format_result(server.get('status'))}"
+                    )
                 else:
                     task = await self._query_task(parts[1])
                     yield await self._task_status_response(event, task)
@@ -864,18 +1236,26 @@ class WPRClientPlugin(Star):
                 if len(parts) < 2:
                     label = "模板路径" if action == "cv" else "目标文字"
                     raise ValueError(f"用法：{action} <{label}> [key=value ...]")
-                accepted = await self._submit(event, {
-                    "cvtask" if action == "cv" else "ocrtask": parts[1],
-                    "params": self._parse_params(parts[2:]),
-                })
+                accepted = await self._submit(
+                    event,
+                    {
+                        "cvtask" if action == "cv" else "ocrtask": parts[1],
+                        "params": self._parse_params(parts[2:]),
+                    },
+                )
                 yield event.plain_result(self._accepted_text(accepted))
             else:
-                task_name = parts[1] if action == "task" and len(parts) > 1 else parts[0]
+                task_name = (
+                    parts[1] if action == "task" and len(parts) > 1 else parts[0]
+                )
                 param_parts = parts[2:] if action == "task" else parts[1:]
-                accepted = await self._submit(event, {
-                    "task": task_name,
-                    "params": self._parse_params(param_parts),
-                })
+                accepted = await self._submit(
+                    event,
+                    {
+                        "task": task_name,
+                        "params": self._parse_params(param_parts),
+                    },
+                )
                 yield event.plain_result(self._accepted_text(accepted))
         except Exception as exc:
             logger.exception("WPR session command failed")

@@ -43,8 +43,52 @@ ws://192.168.1.20:8765/ws
 | `notify_completion` | `true` | 任务进入终态时是否主动通知 QQ 会话 |
 | `capture_screenshot` | `true` | 请求任务终态和状态查询截图，并作为 QQ 图片发送 |
 | `allowed_users` | `[]` | 允许使用插件的 QQ 用户 ID 列表；留空不限制 |
+| `llm_tool_enabled` | `true` | 是否允许大模型调用 WPR Tool |
+| `llm_allowed_tasks` | 高阶任务列表 | 大模型可提交的 WPR 任务白名单；空列表禁止模型提交任务 |
+| `llm_allowed_chains` | `[]` | 大模型可启动的预定义任务链名称；空列表禁止模型启动任务链 |
 
 `allowed_users` 建议在实际控制游戏时配置为你的 QQ 号，避免群聊中的其他成员执行点击、启动或关闭命令。
+
+## 大模型 Tool 调用
+
+插件按 AstrBot 官方 `@filter.llm_tool` 接口注册以下工具。启用支持 Function Calling / Tools 的模型后，模型可以根据自然语言自动调用它们，无需用户手写 `/wpr` 命令：
+
+| Tool 名称 | 作用 |
+| --- | --- |
+| `wpr_get_status` | 查询 WPR 服务、浏览器和视觉引擎状态 |
+| `wpr_execute_task` | 提交一个白名单内的 WPR 任务，参数使用 JSON 对象 |
+| `wpr_get_task_status` | 查询指定任务的当前状态和已知结果 |
+| `wpr_wait_task_result` | 等待指定任务进入终态，并将结果返回给模型，最长 30 秒 |
+| `wpr_run_chain` | 启动一个白名单内的预定义任务链 |
+| `wpr_cancel_task` | 取消指定任务 ID |
+
+使用前需要在 AstrBot 的人格或会话工具设置中允许这些 Tool；人格的 `tools` 为空列表时，模型不会调用任何工具。官方开发说明见 [AstrBot 插件 AI 指南](https://github.com/AstrBotDevs/AstrBot/blob/master/docs/zh/dev/star/guides/ai.md)。
+
+默认任务白名单包含 WPR 启动、截图、Pipeline、公开招募、信用商店、好友基建和启动公告任务；不包含 `click`、`swipe`、`text`、浏览器标签页等任意直接操作。需要开放额外任务时，必须将准确任务名加入 `llm_allowed_tasks`，并同时配置 `allowed_users` 限制实际控制用户。
+
+包含点击或浏览器控制的自动化应保存为 `auto/<链名>.json`，再将该链名加入 `llm_allowed_chains`。模型只能运行预先审核的整条链，不能自行加入、修改或组合链内的低层操作。
+
+例如，先通过 `/wpr create daily ...` 创建并审核 `auto/daily.json`，再在 AstrBot 插件配置中将 `llm_allowed_chains` 设为：
+
+```json
+["daily"]
+```
+
+保存并重载插件后，模型才可调用 `wpr_run_chain(chain_name="daily")`。该方式适合固定、确定性的流程：链会按 JSON 顺序运行，失败时停止。
+
+需要模型根据页面结果自行决定下一步时，应给模型明确的流程约束，并让它使用 `wpr_execute_task` 获取任务 ID，再调用 `wpr_wait_task_result` 获取终态结果后继续决策。不要把模型可变决策写进任务链；任务链用于已审核的固定步骤，单任务 Tool 用于受白名单约束的自主决策。
+
+自然语言示例：
+
+```text
+帮我检查 WPR 是否已经连接。
+进入信用商店，收取信用后购买加急许可、招聘许可和赤金。
+访问好友基建，直到没有下一位好友。
+运行每日浏览器签到任务链。
+取消刚才提交的任务。
+```
+
+工具提交任务后会立即将任务 ID 返回给模型；模型可使用 `wpr_wait_task_result` 等待终态并读取结果，或使用 `wpr_get_task_status` 轮询。原有的 QQ 终态通知机制仍会发送最终完成、失败或取消结果与截图。
 
 ## 启动控制会话
 
